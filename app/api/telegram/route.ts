@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getDb, saveDb, addConnectionLog, incrementRequestCount, BotVideo } from "@/lib/serverDb";
 
+export const dynamic = 'force-dynamic';
+
 // Helper to extract embed url (same logic as client-side)
 function getEmbedUrl(rawUrl: string): string | null {
   let url = rawUrl.trim();

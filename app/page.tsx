@@ -451,8 +451,15 @@ export default function Home() {
   const syncWithServer = useCallback(async () => {
     try {
       const response = await fetch('/api/videos');
+      if (!response.ok) {
+        throw new Error(`Server returned status ${response.status}`);
+      }
+      const contentType = response.headers.get("content-type");
+      if (!contentType || !contentType.includes("application/json")) {
+        throw new Error("Received non-JSON response from server");
+      }
       const data = await response.json();
-      if (data.success) {
+      if (data && data.success) {
         setServerLogs(data.logs || []);
         setServerRequests(data.serverRequests || 0);
         setServerStatus(data.status || 'HEALTHY');
@@ -482,7 +489,7 @@ export default function Home() {
         }
       }
     } catch (error) {
-      console.error('Error syncing with server database:', error);
+      console.warn('Error syncing with server database:', error);
     }
   }, []);
 
@@ -537,13 +544,22 @@ export default function Home() {
         })
       });
 
-      const data = await response.json();
-      
       let botResponseText = '🤖 [SYS_ERR] No se recibió respuesta del bot.';
-      if (data && data.text) {
-        botResponseText = data.text;
-      } else if (data && data.error) {
-        botResponseText = `❌ [SYS_ERR] Error: ${data.error}`;
+      
+      if (response.ok) {
+        const contentType = response.headers.get("content-type");
+        if (contentType && contentType.includes("application/json")) {
+          const data = await response.json();
+          if (data && data.text) {
+            botResponseText = data.text;
+          } else if (data && data.error) {
+            botResponseText = `❌ [SYS_ERR] Error: ${data.error}`;
+          }
+        } else {
+          botResponseText = `⚠️ [SYS_WARN] El servidor respondió pero no devolvió JSON válido.`;
+        }
+      } else {
+        botResponseText = `❌ [SYS_ERR] Error del servidor (Código ${response.status}).`;
       }
 
       setSimulatedChat(prev => [...prev, {
@@ -614,12 +630,19 @@ export default function Home() {
         category: 'Infiltrado / Secreto 🔒',
         description: 'Video integrado mediante canal invisible de inyección directa.'
       })
-    }).then(res => res.json())
+    }).then(res => {
+      if (!res.ok) throw new Error(`HTTP error ${res.status}`);
+      const contentType = res.headers.get("content-type");
+      if (!contentType || !contentType.includes("application/json")) {
+        throw new Error("Response is not JSON");
+      }
+      return res.json();
+    })
       .then(data => {
-        if (data.success) {
+        if (data && data.success) {
           syncWithServer();
         }
-      }).catch(err => console.error('Error saving video server-side:', err));
+      }).catch(err => console.warn('Error saving video server-side:', err));
 
     setVideos(prev => {
       const title = finalTitle;
@@ -984,12 +1007,19 @@ export default function Home() {
         category: newCategory,
         description: newDescription.trim() || 'Video guardado en la colección local del usuario.'
       })
-    }).then(res => res.json())
+    }).then(res => {
+      if (!res.ok) throw new Error(`HTTP error ${res.status}`);
+      const contentType = res.headers.get("content-type");
+      if (!contentType || !contentType.includes("application/json")) {
+        throw new Error("Response is not JSON");
+      }
+      return res.json();
+    })
       .then(data => {
-        if (data.success) {
+        if (data && data.success) {
           syncWithServer();
         }
-      }).catch(err => console.error('Error saving video server-side:', err));
+      }).catch(err => console.warn('Error saving video server-side:', err));
 
     const updatedVideos = [...videos, newVideo];
     setVideos(updatedVideos);

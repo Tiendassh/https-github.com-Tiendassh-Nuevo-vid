@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getDb, saveDb, addConnectionLog, incrementRequestCount, BotVideo } from "@/lib/serverDb";
 
+export const dynamic = 'force-dynamic';
+
 export async function GET(req: NextRequest) {
   const startTime = Date.now();
   incrementRequestCount();
