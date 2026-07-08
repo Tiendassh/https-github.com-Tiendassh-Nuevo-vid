@@ -276,9 +276,9 @@ export default function Home() {
   };
 
   // Telegram Group Config
-  const [telegramUrl, setTelegramUrl] = useState('https://t.me/NocturnaPro');
+  const [telegramUrl, setTelegramUrl] = useState('http://t.me/Start_vidroxbot');
   const [isEditingTelegram, setIsEditingTelegram] = useState(false);
-  const [tempTelegramUrl, setTempTelegramUrl] = useState('https://t.me/NocturnaPro');
+  const [tempTelegramUrl, setTempTelegramUrl] = useState('http://t.me/Start_vidroxbot');
 
   // Load state from LocalStorage on mount
   useEffect(() => {
@@ -301,7 +301,7 @@ export default function Home() {
 
     // Set telegram url if stored
     const savedTelegram = localStorage.getItem('nocturnal_telegram_url');
-    let finalTelegram = 'https://t.me/NocturnaPro';
+    let finalTelegram = 'http://t.me/Start_vidroxbot';
     if (savedTelegram) {
       finalTelegram = savedTelegram;
     }
@@ -1368,8 +1368,8 @@ services:
                           if (finalUrl && !finalUrl.startsWith('http://') && !finalUrl.startsWith('https://')) {
                             finalUrl = 'https://' + finalUrl;
                           }
-                          setTelegramUrl(finalUrl || 'https://t.me/NocturnaPro');
-                          localStorage.setItem('nocturnal_telegram_url', finalUrl || 'https://t.me/NocturnaPro');
+                          setTelegramUrl(finalUrl || 'http://t.me/Start_vidroxbot');
+                          localStorage.setItem('nocturnal_telegram_url', finalUrl || 'http://t.me/Start_vidroxbot');
                           setIsEditingTelegram(false);
                         }}
                         className="px-2.5 py-1 text-[11px] bg-blue-600 hover:bg-blue-700 text-white rounded font-medium transition-colors"
