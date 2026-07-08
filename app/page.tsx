@@ -35,7 +35,13 @@ import {
   LogOut,
   User,
   Lock,
-  Mail
+  Mail,
+  Database,
+  Cpu,
+  Activity,
+  Terminal,
+  Settings,
+  Bot
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
@@ -209,9 +215,28 @@ export default function Home() {
   const [commentSort, setCommentSort] = useState<'rating' | 'newest'>('rating');
   const [commentSearch, setCommentSearch] = useState('');
 
-  // Tab state (Sidebar) - 'videos' | 'nginx' | 'quest'
-  const [activeSidebarTab, setActiveSidebarTab] = useState<'videos' | 'nginx' | 'quest'>('videos');
+  // Tab state (Sidebar) - 'videos' | 'nginx' | 'quest' | 'bot'
+  const [activeSidebarTab, setActiveSidebarTab] = useState<'videos' | 'nginx' | 'quest' | 'bot'>('videos');
   const [activeGuideTab, setActiveGuideTab] = useState<'render-standard' | 'render-docker' | 'vps'>('render-standard');
+
+  // Server Sync and Logs State
+  const [serverLogs, setServerLogs] = useState<any[]>([]);
+  const [serverRequests, setServerRequests] = useState<number>(0);
+  const [serverStatus, setServerStatus] = useState<string>('HEALTHY');
+  const [serverUptime, setServerUptime] = useState<number>(0);
+  const [nodeVersion, setNodeVersion] = useState<string>('');
+  
+  // Simulated Telegram Chat State
+  const [simulatedChat, setSimulatedChat] = useState<Array<{ id: string; sender: 'user' | 'bot'; text: string; timestamp: string }>>([
+    {
+      id: 'msg-init-1',
+      sender: 'bot',
+      text: '🤖 Hola, soy @Start_vidroxbot. ¡Pregúntame enviando /start o envíame un enlace de video directamente para agregarlo a la Red Nocturna!',
+      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    }
+  ]);
+  const [simulatedInput, setSimulatedInput] = useState('');
+  const [isSimulatingMessage, setIsSimulatingMessage] = useState(false);
   const [copiedTextType, setCopiedTextType] = useState<string | null>(null);
   
   // UI preferences
@@ -422,6 +447,128 @@ export default function Home() {
     }, 0);
   }, [activeVideo]);
 
+  // Sync state with server JSON database
+  const syncWithServer = useCallback(async () => {
+    try {
+      const response = await fetch('/api/videos');
+      const data = await response.json();
+      if (data.success) {
+        setServerLogs(data.logs || []);
+        setServerRequests(data.serverRequests || 0);
+        setServerStatus(data.status || 'HEALTHY');
+        setServerUptime(data.uptime || 0);
+        setNodeVersion(data.nodeVersion || '');
+
+        // If there are videos in the server database, let's merge them into our videos list!
+        if (Array.isArray(data.videos) && data.videos.length > 0) {
+          setVideos(prev => {
+            const merged = [...prev];
+            data.videos.forEach((sv: any) => {
+              if (!merged.some(v => v.id === sv.id || v.url === sv.url)) {
+                merged.push({
+                  id: sv.id,
+                  title: sv.title,
+                  url: sv.url,
+                  author: sv.author,
+                  category: sv.category,
+                  description: sv.description,
+                  isCustom: true
+                });
+              }
+            });
+            localStorage.setItem('nocturnal_videos', JSON.stringify(merged));
+            return merged;
+          });
+        }
+      }
+    } catch (error) {
+      console.error('Error syncing with server database:', error);
+    }
+  }, []);
+
+  // Poll server for live updates every 5 seconds
+  useEffect(() => {
+    if (!mounted) return;
+    syncWithServer();
+    const interval = setInterval(() => {
+      syncWithServer();
+    }, 5000);
+    return () => clearInterval(interval);
+  }, [mounted, syncWithServer]);
+
+  // Handle simulated Telegram messages
+  const handleSimulateTelegramMessage = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!simulatedInput.trim() || isSimulatingMessage) return;
+
+    const userMsg = simulatedInput.trim();
+    const timestamp = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    const msgId = 'msg-sim-' + Date.now();
+
+    setSimulatedChat(prev => [...prev, {
+      id: msgId,
+      sender: 'user',
+      text: userMsg,
+      timestamp
+    }]);
+
+    setSimulatedInput('');
+    setIsSimulatingMessage(true);
+
+    try {
+      const response = await fetch('/api/telegram', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          update_id: Math.floor(Math.random() * 1000000),
+          message: {
+            message_id: Math.floor(Math.random() * 1000),
+            from: {
+              id: 99999,
+              first_name: currentUser ? currentUser.username : (authorName || 'Invitado_Nocturno'),
+              username: currentUser ? currentUser.username.toLowerCase() : 'invitado_nocturno'
+            },
+            chat: {
+              id: 12345678,
+              type: 'private'
+            },
+            text: userMsg
+          }
+        })
+      });
+
+      const data = await response.json();
+      
+      let botResponseText = '🤖 [SYS_ERR] No se recibió respuesta del bot.';
+      if (data && data.text) {
+        botResponseText = data.text;
+      } else if (data && data.error) {
+        botResponseText = `❌ [SYS_ERR] Error: ${data.error}`;
+      }
+
+      setSimulatedChat(prev => [...prev, {
+        id: 'msg-bot-' + Date.now(),
+        sender: 'bot',
+        text: botResponseText,
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+      }]);
+
+      syncWithServer();
+      awardPoints(15, 'Simulación de bot ejecutada con éxito');
+
+    } catch (error: any) {
+      console.error('Error simulating Telegram webhook:', error);
+      setSimulatedChat(prev => [...prev, {
+        id: 'msg-err-' + Date.now(),
+        sender: 'bot',
+        text: `❌ [CON_ERR] Falló el enlace con el servidor: ${error.message || 'Error de red'}`,
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+      }]);
+    } finally {
+      setIsSimulatingMessage(false);
+    }
+  };
+
   // Process raw input (link or embed code) from invisible source
   const processInvisibleVideoInput = useCallback((rawInput: string): boolean => {
     if (!rawInput || !rawInput.trim()) return false;
@@ -454,10 +601,28 @@ export default function Home() {
       return false;
     }
 
-    const finalTitle = extractedTitle;
+    const finalTitle = extractedTitle || `Vídeo Secreto #${Date.now().toString().slice(-4)}`;
     
+    // POST to server database to persist
+    fetch('/api/videos', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        title: finalTitle,
+        url: embedUrl,
+        author: currentUser ? currentUser.username : (authorName || 'Explorador Nocturno'),
+        category: 'Infiltrado / Secreto 🔒',
+        description: 'Video integrado mediante canal invisible de inyección directa.'
+      })
+    }).then(res => res.json())
+      .then(data => {
+        if (data.success) {
+          syncWithServer();
+        }
+      }).catch(err => console.error('Error saving video server-side:', err));
+
     setVideos(prev => {
-      const title = finalTitle || `Vídeo Secreto #${prev.length + 1}`;
+      const title = finalTitle;
       
       const newVideo: Video = {
         id: 'custom-' + Date.now(),
@@ -484,7 +649,7 @@ export default function Home() {
     });
 
     return true;
-  }, [currentUser, authorName]);
+  }, [currentUser, authorName, syncWithServer]);
 
   // Handle direct secret submission
   const handleSecretConsoleSubmit = useCallback((e: React.FormEvent) => {
@@ -807,6 +972,24 @@ export default function Home() {
       description: newDescription.trim() || 'Video guardado en la colección local del usuario.',
       isCustom: true
     };
+
+    // POST to server database to persist
+    fetch('/api/videos', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        title: newTitle.trim(),
+        url: embedUrl,
+        author: authorName || 'Creador Anónimo',
+        category: newCategory,
+        description: newDescription.trim() || 'Video guardado en la colección local del usuario.'
+      })
+    }).then(res => res.json())
+      .then(data => {
+        if (data.success) {
+          syncWithServer();
+        }
+      }).catch(err => console.error('Error saving video server-side:', err));
 
     const updatedVideos = [...videos, newVideo];
     setVideos(updatedVideos);
@@ -1764,6 +1947,19 @@ services:
                 <Gamepad2 className="w-3.5 h-3.5" />
                 <span>Quest 🎮</span>
               </button>
+
+              <button
+                id="btn-tab-bot"
+                onClick={() => setActiveSidebarTab('bot')}
+                className={`flex-1 flex items-center justify-center gap-2 py-2 rounded text-xs font-semibold tracking-tight transition-all ${
+                  activeSidebarTab === 'bot'
+                    ? tc('bg-cyan-500/15 text-cyan-400 border border-cyan-500/25', 'bg-cyan-100 text-cyan-800 border border-cyan-200')
+                    : tc('text-white/60 hover:text-white border border-transparent', 'text-slate-500 hover:text-slate-800 border border-transparent')
+                }`}
+              >
+                <Bot className="w-3.5 h-3.5" />
+                <span>Bot Control 🤖</span>
+              </button>
             </div>
 
             {/* TAB CONTENT: VIDEOS */}
@@ -2436,6 +2632,195 @@ services:
                     )}
                   </motion.div>
                 )}
+              </div>
+            )}
+
+            {/* TAB CONTENT: TELEGRAM BOT CONTROL AND SERVER DATABASE */}
+            {activeSidebarTab === 'bot' && (
+              <div className="flex flex-col gap-4 animate-in fade-in slide-in-from-bottom-3 duration-300">
+                {/* Header Card */}
+                <div className={`p-4 rounded-xl border flex flex-col gap-2.5 relative overflow-hidden transition-all ${
+                  tc('bg-gradient-to-br from-blue-500/10 to-[#0A0A0B] border-blue-500/20 text-blue-400', 'bg-gradient-to-br from-blue-50 to-white border-blue-200 text-blue-800')
+                }`}>
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <Bot className="w-5 h-5 text-blue-400 animate-pulse" />
+                      <h4 className="font-bold text-xs uppercase tracking-wider font-mono">Panel del Bot de Vídeo</h4>
+                    </div>
+                    <span className="flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] font-bold bg-green-500/20 border border-green-500/30 text-green-400 animate-pulse">
+                      ● CONECTADO
+                    </span>
+                  </div>
+                  <p className={`text-[11px] leading-relaxed ${tc('text-white/70', 'text-slate-600')}`}>
+                    Canal de sincronización para @Start_vidroxbot. Aquí puedes configurar, supervisar y simular las peticiones remotas del bot en tiempo real.
+                  </p>
+
+                  <div className="mt-1 flex flex-col gap-1.5 text-[10px] font-mono bg-black/30 p-2.5 rounded-lg border border-white/5">
+                    <div className="flex justify-between items-center">
+                      <span className="text-white/40">BOT ACTIVO:</span>
+                      <a href="http://t.me/Start_vidroxbot" target="_blank" rel="noreferrer" className="text-cyan-400 hover:underline flex items-center gap-1">
+                        @Start_vidroxbot <ExternalLink className="w-2.5 h-2.5" />
+                      </a>
+                    </div>
+                    <div className="flex justify-between items-center">
+                      <span className="text-white/40">URL WEBHOOK DE API:</span>
+                      <span className="text-blue-300 font-bold tracking-tight select-all truncate max-w-[180px]" title={typeof window !== 'undefined' ? `${window.location.origin}/api/telegram` : '/api/telegram'}>
+                        {typeof window !== 'undefined' ? `${window.location.origin}/api/telegram` : '/api/telegram'}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Grid Server & DB Status */}
+                <div className="grid grid-cols-2 gap-3">
+                  <div className={`p-3 rounded-xl border font-mono ${tc('bg-[#0A0A0B] border-white/5 text-white', 'bg-slate-50 border-slate-200 text-slate-800')}`}>
+                    <div className="flex items-center gap-1.5 mb-2 border-b border-white/5 pb-1.5">
+                      <Cpu className="w-3.5 h-3.5 text-blue-400" />
+                      <span className="text-[10px] font-bold text-blue-400 font-mono">SERVIDOR</span>
+                    </div>
+                    <div className="space-y-1.5 text-[10px]">
+                      <div className="flex justify-between">
+                        <span className="text-white/40">Entorno:</span>
+                        <span className="text-emerald-400 font-mono">Cloud Run</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-white/40">Puerto:</span>
+                        <span className="font-mono">3000 (Proxy)</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-white/40">Node.js:</span>
+                        <span className="font-mono">{nodeVersion || 'v20.x'}</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-white/40">Uptime:</span>
+                        <span className="text-cyan-300 font-mono">{serverUptime ? `${Math.floor(serverUptime)}s` : '0s'}</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className={`p-3 rounded-xl border font-mono ${tc('bg-[#0A0A0B] border-white/5 text-white', 'bg-slate-50 border-slate-200 text-slate-800')}`}>
+                    <div className="flex items-center gap-1.5 mb-2 border-b border-white/5 pb-1.5">
+                      <Database className="w-3.5 h-3.5 text-cyan-400" />
+                      <span className="text-[10px] font-bold text-cyan-400 font-mono">BASE DE DATOS</span>
+                    </div>
+                    <div className="space-y-1.5 text-[10px]">
+                      <div className="flex justify-between">
+                        <span className="text-white/40">Tipo:</span>
+                        <span className="font-mono">Local Store</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-white/40">Ruta:</span>
+                        <span className="text-orange-400 font-mono">/tmp/nocturnal_db.json</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-white/40">Peticiones:</span>
+                        <span className="text-cyan-400 font-bold font-mono">{serverRequests || 1}</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-white/40">Estado:</span>
+                        <span className="text-green-400 font-bold font-mono">ACTIVA 🟢</span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* TELEGRAM SIMULATOR TERMINAL */}
+                <div className={`rounded-xl border flex flex-col overflow-hidden h-[340px] ${tc('bg-[#040405] border-white/10 text-white', 'bg-white border-slate-200 text-slate-800')}`}>
+                  {/* Header */}
+                  <div className="px-3.5 py-2.5 bg-black/40 border-b border-white/5 flex items-center justify-between">
+                    <div className="flex items-center gap-1.5">
+                      <div className="w-2 h-2 rounded-full bg-blue-500 animate-ping" />
+                      <span className="text-[10px] font-bold font-mono tracking-wider text-white/70">SIMULADOR @Start_vidroxbot</span>
+                    </div>
+                    <span className="text-[9px] font-mono text-white/30 uppercase tracking-widest">Canal de Prueba</span>
+                  </div>
+
+                  {/* Message Log */}
+                  <div className="flex-1 p-3 overflow-y-auto space-y-2.5 font-sans text-xs flex flex-col justify-end">
+                    {simulatedChat.map((msg) => (
+                      <div
+                        key={msg.id}
+                        className={`max-w-[85%] rounded-2xl p-2.5 text-xs leading-relaxed ${
+                          msg.sender === 'user'
+                            ? 'self-end bg-blue-600 text-white rounded-br-none font-mono text-[11px]'
+                            : 'self-start bg-zinc-800/80 text-white rounded-bl-none border border-white/5'
+                        }`}
+                      >
+                        <p className="whitespace-pre-wrap">{msg.text}</p>
+                        <span className="block text-[8px] text-white/40 mt-1 text-right font-mono">{msg.timestamp}</span>
+                      </div>
+                    ))}
+                    {isSimulatingMessage && (
+                      <div className="self-start bg-zinc-800/80 text-white rounded-2xl rounded-bl-none border border-white/5 p-2.5 text-xs flex items-center gap-1">
+                        <span className="w-1.5 h-1.5 rounded-full bg-white/40 animate-bounce" style={{ animationDelay: '0ms' }} />
+                        <span className="w-1.5 h-1.5 rounded-full bg-white/40 animate-bounce" style={{ animationDelay: '150ms' }} />
+                        <span className="w-1.5 h-1.5 rounded-full bg-white/40 animate-bounce" style={{ animationDelay: '300ms' }} />
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Input Form */}
+                  <form onSubmit={handleSimulateTelegramMessage} className="p-2 border-t border-white/5 bg-black/20 flex gap-2">
+                    <input
+                      type="text"
+                      placeholder="Prueba un comando como /status o pega un video..."
+                      value={simulatedInput}
+                      onChange={(e) => setSimulatedInput(e.target.value)}
+                      disabled={isSimulatingMessage}
+                      className="flex-1 bg-black/50 border border-white/10 rounded-lg px-3 py-1.5 text-xs text-white placeholder-white/30 focus:outline-none focus:border-blue-500 font-mono"
+                    />
+                    <button
+                      type="submit"
+                      disabled={isSimulatingMessage || !simulatedInput.trim()}
+                      className="px-3 py-1.5 bg-blue-600 hover:bg-blue-500 disabled:bg-zinc-700/50 disabled:text-zinc-500 text-white rounded-lg transition-colors flex items-center justify-center"
+                    >
+                      <Send className="w-3.5 h-3.5" />
+                    </button>
+                  </form>
+                </div>
+
+                {/* CONNECTION AND METRICS LOGS TERMINAL */}
+                <div className={`rounded-xl border flex flex-col overflow-hidden h-[190px] font-mono ${tc('bg-[#020203] border-white/10 text-white', 'bg-slate-900 border-slate-700 text-slate-100')}`}>
+                  <div className="px-3.5 py-2.5 bg-black/50 border-b border-white/5 flex items-center justify-between">
+                    <div className="flex items-center gap-1.5">
+                      <Activity className="w-3.5 h-3.5 text-cyan-400" />
+                      <span className="text-[10px] font-bold text-white/70">REGISTROS DE CONEXIÓN Y BASE DE DATOS</span>
+                    </div>
+                    <span className="text-[8px] text-white/30 uppercase tracking-widest">Tiempo real</span>
+                  </div>
+
+                  <div className="flex-1 p-2.5 overflow-y-auto space-y-1.5 text-[10px] leading-relaxed scrollbar-thin select-none">
+                    {serverLogs.length === 0 ? (
+                      <div className="text-white/30 text-center py-8">Iniciando monitor de logs del servidor...</div>
+                    ) : (
+                      serverLogs.slice(0, 15).map((log: any) => (
+                        <div key={log.id} className="flex flex-col border-b border-white/5 pb-1">
+                          <div className="flex items-center justify-between">
+                            <span className="text-[9px] text-white/30 font-mono">
+                              {new Date(log.timestamp).toLocaleTimeString()}
+                            </span>
+                            <div className="flex gap-1">
+                              <span className={`px-1 rounded-[3px] text-[8px] font-bold font-mono ${
+                                log.type === 'SYNC' ? 'bg-zinc-800 text-zinc-300' :
+                                log.type === 'BOT_WRITE' ? 'bg-blue-900/40 text-blue-300' :
+                                'bg-purple-900/40 text-purple-300'
+                              }`}>
+                                {log.type}
+                              </span>
+                              <span className={`px-1 rounded-[3px] text-[8px] font-bold font-mono ${
+                                log.status === 'SUCCESS' ? 'bg-green-900/40 text-green-400' : 'bg-red-900/40 text-red-400'
+                              }`}>
+                                {log.status} ({log.durationMs}ms)
+                              </span>
+                            </div>
+                          </div>
+                          <p className="text-cyan-300/85 mt-0.5 whitespace-pre-wrap font-mono text-[9px]">{log.details}</p>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </div>
+
               </div>
             )}
           </div>
