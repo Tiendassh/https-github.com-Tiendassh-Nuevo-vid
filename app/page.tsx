@@ -31,6 +31,7 @@ import {
   Rewind,
   SkipForward,
   SkipBack,
+  Pause,
   Volume2,
   Gamepad2,
   Trophy,
@@ -251,6 +252,7 @@ export default function Home() {
   // UI preferences
   const [cinemaMode, setCinemaMode] = useState(false);
   const [playerHeight, setPlayerHeight] = useState<'standard' | 'tall' | 'cinema'>('standard');
+  const [isPlaying, setIsPlaying] = useState<boolean>(true);
   const [glowEffect, setGlowEffect] = useState(true);
 
   // Theme State
@@ -457,7 +459,7 @@ export default function Home() {
     }, 0);
   }, [activeVideo]);
 
-  // Video playback custom controls (seeking, next, previous)
+  // Video playback custom controls (seeking, next, previous, play/pause)
   const ytTimeRef = useRef<number>(0);
 
   useEffect(() => {
@@ -466,8 +468,18 @@ export default function Home() {
         if (typeof event.data === 'string') {
           if (event.data.includes('infoDelivery')) {
             const data = JSON.parse(event.data);
-            if (data.event === 'infoDelivery' && data.info && typeof data.info.currentTime === 'number') {
-              ytTimeRef.current = data.info.currentTime;
+            if (data.event === 'infoDelivery' && data.info) {
+              if (typeof data.info.currentTime === 'number') {
+                ytTimeRef.current = data.info.currentTime;
+              }
+              if (typeof data.info.playerState === 'number') {
+                const state = data.info.playerState;
+                if (state === 1) { // 1 is playing
+                  setIsPlaying(true);
+                } else if (state === 2) { // 2 is paused
+                  setIsPlaying(false);
+                }
+              }
             }
           }
         }
@@ -479,6 +491,20 @@ export default function Home() {
     window.addEventListener('message', handleMessage);
     return () => window.removeEventListener('message', handleMessage);
   }, []);
+
+  const togglePlayPause = useCallback(() => {
+    const iframe = document.getElementById('main-video-iframe') as HTMLIFrameElement;
+    if (iframe && iframe.contentWindow) {
+      const nextPlayState = !isPlaying;
+      iframe.contentWindow.postMessage(JSON.stringify({
+        event: 'command',
+        func: nextPlayState ? 'playVideo' : 'pauseVideo',
+        args: []
+      }), '*');
+      setIsPlaying(nextPlayState);
+      awardPoints(5, nextPlayState ? 'Video reproducido' : 'Video pausado');
+    }
+  }, [isPlaying, awardPoints]);
 
   const handleSeek = useCallback((secondsOffset: number) => {
     const iframe = document.getElementById('main-video-iframe') as HTMLIFrameElement;
@@ -825,6 +851,13 @@ export default function Home() {
           e.preventDefault();
           setCinemaMode(c => !c);
         }
+      } else if (e.key === ' ' || e.key === 'Spacebar') {
+        const activeEl = document.activeElement;
+        if (activeEl && (activeEl.tagName === 'INPUT' || activeEl.tagName === 'TEXTAREA' || activeEl.getAttribute('contenteditable') === 'true')) {
+          return;
+        }
+        e.preventDefault();
+        togglePlayPause();
       }
     };
 
@@ -851,7 +884,7 @@ export default function Home() {
       window.removeEventListener('keydown', handleKeyDown);
       window.removeEventListener('paste', handleGlobalPaste);
     };
-  }, [mounted, processInvisibleVideoInput, handleSeek, handleNextVideo, handlePrevVideo, setCinemaMode]);
+  }, [mounted, processInvisibleVideoInput, handleSeek, handleNextVideo, handlePrevVideo, setCinemaMode, togglePlayPause]);
 
   if (!mounted) {
     return (
@@ -1771,9 +1804,29 @@ services:
                   </button>
                 </div>
 
-                <div className="text-[10px] font-mono opacity-40 uppercase tracking-widest hidden sm:inline-block px-1 select-none">
-                  Navegación
-                </div>
+                {/* PLAY / PAUSE BUTTON */}
+                <button
+                  id="btn-play-pause-toggle"
+                  onClick={togglePlayPause}
+                  className={`px-3 py-2 rounded-lg border flex items-center gap-1.5 text-xs font-bold font-mono uppercase tracking-wider transition-all shadow-sm ${
+                    isPlaying
+                      ? tc('bg-red-500/15 border-red-500/25 text-red-400 hover:bg-red-500/25', 'bg-red-50 border-red-200 text-red-600 hover:bg-red-100')
+                      : tc('bg-emerald-500/15 border-emerald-500/25 text-emerald-400 hover:bg-emerald-500/25', 'bg-emerald-50 border-emerald-200 text-emerald-600 hover:bg-emerald-100')
+                  }`}
+                  title={isPlaying ? "Pausar Video (Atajo: Espacio)" : "Reproducir Video (Atajo: Espacio)"}
+                >
+                  {isPlaying ? (
+                    <>
+                      <Pause className="w-3.5 h-3.5 fill-current" />
+                      <span className="hidden sm:inline">Pausar</span>
+                    </>
+                  ) : (
+                    <>
+                      <Play className="w-3.5 h-3.5 fill-current" />
+                      <span className="hidden sm:inline">Reprod.</span>
+                    </>
+                  )}
+                </button>
 
                 <div className="flex items-center gap-1.5">
                   <button
@@ -1803,6 +1856,9 @@ services:
 
               {/* CENTER: KEYBOARD SHORTCUT CHIPS INFO (STYLISH DECK) */}
               <div className="hidden lg:flex items-center gap-3 text-[10px] font-mono text-white/40">
+                <span className="flex items-center gap-1 px-1.5 py-0.5 rounded bg-black/20 border border-white/5">
+                  <kbd>Espacio</kbd> <span className="opacity-75">Play/Pausa</span>
+                </span>
                 <span className="flex items-center gap-1 px-1.5 py-0.5 rounded bg-black/20 border border-white/5">
                   <kbd>←</kbd>/<kbd>→</kbd> <span className="opacity-75">Saltar</span>
                 </span>
