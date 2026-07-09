@@ -288,7 +288,7 @@ export default function Home() {
   };
 
   // Helper to award score points
-  const awardPoints = (points: number, reason: string) => {
+  const awardPoints = useCallback((points: number, reason: string) => {
     setScore(prev => {
       const nextScore = prev + points;
       localStorage.setItem('nocturnal_score', nextScore.toString());
@@ -298,7 +298,7 @@ export default function Home() {
     setTimeout(() => {
       setShowScoreToast(null);
     }, 4000);
-  };
+  }, []);
 
   // Helper to discover hidden secrets
   const findSecret = (secretId: string, points: number, reason: string) => {
@@ -767,7 +767,7 @@ export default function Home() {
     });
 
     return true;
-  }, [currentUser, authorName, syncWithServer]);
+  }, [currentUser, authorName, syncWithServer, awardPoints]);
 
   // Handle direct secret submission
   const handleSecretConsoleSubmit = useCallback((e: React.FormEvent) => {
@@ -884,7 +884,7 @@ export default function Home() {
       window.removeEventListener('keydown', handleKeyDown);
       window.removeEventListener('paste', handleGlobalPaste);
     };
-  }, [mounted, processInvisibleVideoInput, handleSeek, handleNextVideo, handlePrevVideo, setCinemaMode, togglePlayPause]);
+  }, [mounted, processInvisibleVideoInput, handleSeek, handleNextVideo, handlePrevVideo, setCinemaMode, togglePlayPause, awardPoints]);
 
   if (!mounted) {
     return (
