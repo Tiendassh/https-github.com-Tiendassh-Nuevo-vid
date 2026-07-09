@@ -24,7 +24,13 @@ import {
   Info, 
   ExternalLink,
   ChevronRight,
+  ChevronLeft,
   Maximize2,
+  Minimize2,
+  FastForward,
+  Rewind,
+  SkipForward,
+  SkipBack,
   Volume2,
   Gamepad2,
   Trophy,
@@ -244,6 +250,7 @@ export default function Home() {
   
   // UI preferences
   const [cinemaMode, setCinemaMode] = useState(false);
+  const [playerHeight, setPlayerHeight] = useState<'standard' | 'tall' | 'cinema'>('standard');
   const [glowEffect, setGlowEffect] = useState(true);
 
   // Theme State
@@ -449,6 +456,64 @@ export default function Home() {
       setComments(finalComments);
     }, 0);
   }, [activeVideo]);
+
+  // Video playback custom controls (seeking, next, previous)
+  const ytTimeRef = useRef<number>(0);
+
+  useEffect(() => {
+    const handleMessage = (event: MessageEvent) => {
+      try {
+        if (typeof event.data === 'string') {
+          if (event.data.includes('infoDelivery')) {
+            const data = JSON.parse(event.data);
+            if (data.event === 'infoDelivery' && data.info && typeof data.info.currentTime === 'number') {
+              ytTimeRef.current = data.info.currentTime;
+            }
+          }
+        }
+      } catch (e) {
+        // Safe catch for postMessage parse issues
+      }
+    };
+
+    window.addEventListener('message', handleMessage);
+    return () => window.removeEventListener('message', handleMessage);
+  }, []);
+
+  const handleSeek = useCallback((secondsOffset: number) => {
+    const iframe = document.getElementById('main-video-iframe') as HTMLIFrameElement;
+    if (iframe && iframe.contentWindow) {
+      const targetTime = Math.max(0, ytTimeRef.current + secondsOffset);
+      iframe.contentWindow.postMessage(JSON.stringify({
+        event: 'command',
+        func: 'seekTo',
+        args: [targetTime, true]
+      }), '*');
+      ytTimeRef.current = targetTime; // Optimistic update
+    }
+  }, []);
+
+  const handleNextVideo = useCallback(() => {
+    if (videos.length === 0) return;
+    const currentIndex = videos.findIndex(v => v.id === activeVideo?.id);
+    if (currentIndex === -1) {
+      setActiveVideo(videos[0]);
+    } else {
+      const nextIndex = (currentIndex + 1) % videos.length;
+      setActiveVideo(videos[nextIndex]);
+    }
+  }, [videos, activeVideo]);
+
+  const handlePrevVideo = useCallback(() => {
+    if (videos.length === 0) return;
+    const currentIndex = videos.findIndex(v => v.id === activeVideo?.id);
+    if (currentIndex === -1) {
+      setActiveVideo(videos[videos.length - 1]);
+    } else {
+      const prevIndex = (currentIndex - 1 + videos.length) % videos.length;
+      setActiveVideo(videos[prevIndex]);
+    }
+  }, [videos, activeVideo]);
 
   // Sync state with server JSON database
   const syncWithServer = useCallback(async () => {
@@ -737,6 +802,30 @@ export default function Home() {
         setSecretInputText('');
         awardPoints(15, 'Consola secreta abierta mediante atajo Alt+P');
       }
+
+      // Keyboard shortcuts for video controls
+      if (e.key === 'ArrowRight') {
+        e.preventDefault();
+        handleSeek(10);
+      } else if (e.key === 'ArrowLeft') {
+        e.preventDefault();
+        handleSeek(-10);
+      } else if (e.key === 'n' || e.key === 'N') {
+        if (!e.ctrlKey && !e.altKey && !e.metaKey) {
+          e.preventDefault();
+          handleNextVideo();
+        }
+      } else if (e.key === 'b' || e.key === 'B') {
+        if (!e.ctrlKey && !e.altKey && !e.metaKey) {
+          e.preventDefault();
+          handlePrevVideo();
+        }
+      } else if (e.key === 'm' || e.key === 'M') {
+        if (!e.ctrlKey && !e.altKey && !e.metaKey) {
+          e.preventDefault();
+          setCinemaMode(c => !c);
+        }
+      }
     };
 
     // Global paste listener when not focusing input elements
@@ -762,7 +851,7 @@ export default function Home() {
       window.removeEventListener('keydown', handleKeyDown);
       window.removeEventListener('paste', handleGlobalPaste);
     };
-  }, [mounted, processInvisibleVideoInput]);
+  }, [mounted, processInvisibleVideoInput, handleSeek, handleNextVideo, handlePrevVideo, setCinemaMode]);
 
   if (!mounted) {
     return (
@@ -781,6 +870,9 @@ export default function Home() {
     const trimmed = url.trim();
     
     if (trimmed.includes('/embed/') || trimmed.includes('player.vimeo.com/video/')) {
+      if (trimmed.includes('youtube.com') && !trimmed.includes('enablejsapi=1')) {
+        return trimmed.includes('?') ? `${trimmed}&enablejsapi=1` : `${trimmed}?enablejsapi=1`;
+      }
       return trimmed;
     }
     
@@ -788,7 +880,7 @@ export default function Home() {
     let regExp = /^.*(youtu.be\/|v\/|u\/\w\/|embed\/|watch\?v=|\&v=)([^#\&\?]*).*/;
     let match = trimmed.match(regExp);
     if (match && match[2].length === 11) {
-      return `https://www.youtube.com/embed/${match[2]}?autoplay=1&mute=0&modestbranding=1`;
+      return `https://www.youtube.com/embed/${match[2]}?autoplay=1&mute=0&modestbranding=1&enablejsapi=1`;
     }
     
     // Vimeo standard
@@ -1618,7 +1710,13 @@ services:
               <div className="absolute -inset-1.5 bg-gradient-to-r from-blue-600/20 to-purple-600/20 rounded-2xl blur-xl opacity-70 group-hover:opacity-100 transition-opacity duration-500 pointer-events-none z-0"></div>
             )}
             
-            <div className={`relative z-10 w-full rounded-2xl overflow-hidden bg-black border aspect-video flex flex-col justify-between shadow-2xl ${tc('border-white/10', 'border-slate-300')}`}>
+            <div className={`relative z-10 w-full rounded-2xl overflow-hidden bg-black border flex flex-col justify-between shadow-2xl transition-all duration-500 ${
+              playerHeight === 'tall' 
+                ? 'h-[440px] sm:h-[520px]' 
+                : playerHeight === 'cinema' 
+                  ? 'h-[550px] sm:h-[650px]' 
+                  : 'aspect-video'
+            } ${tc('border-white/10', 'border-slate-300')}`}>
               {activeVideo ? (
                 <iframe
                   id="main-video-iframe"
@@ -1637,6 +1735,157 @@ services:
               )}
             </div>
           </div>
+
+          {/* VIDEO CONTROLS: PLAYBACK SPEED, JUMP, & RESIZING (CONSOLA EN PANTALLA) */}
+          {activeVideo && (
+            <div 
+              id="player-control-deck"
+              className={`p-4 rounded-2xl border flex flex-col md:flex-row items-center justify-between gap-4 transition-all duration-300 shadow-lg ${
+                tc('bg-[#0E0F12]/90 border-white/10 text-white', 'bg-white border-slate-200 text-slate-800')
+              }`}
+            >
+              {/* LEFT SIDE: SKIP & PLAYHEAD STEPPING */}
+              <div className="flex items-center gap-2 w-full md:w-auto justify-between md:justify-start">
+                <div className="flex items-center gap-1.5">
+                  <button
+                    id="btn-skip-prev"
+                    onClick={handlePrevVideo}
+                    className={`p-2 rounded-lg border transition-all ${
+                      tc('bg-white/5 border-white/10 hover:bg-white/10 text-white/80 hover:text-white', 'bg-slate-100 border-slate-200 hover:bg-slate-200 text-slate-700 hover:text-slate-900')
+                    }`}
+                    title="Video Anterior (Atajo: B)"
+                  >
+                    <SkipBack className="w-4 h-4" />
+                  </button>
+
+                  <button
+                    id="btn-seek-backward"
+                    onClick={() => handleSeek(-10)}
+                    className={`px-3 py-2 rounded-lg border flex items-center gap-1.5 text-xs font-mono transition-all ${
+                      tc('bg-white/5 border-white/10 hover:bg-white/10 text-white/80 hover:text-white', 'bg-slate-100 border-slate-200 hover:bg-slate-200 text-slate-700 hover:text-slate-900')
+                    }`}
+                    title="Retroceder 10 segundos (Atajo: Flecha Izquierda)"
+                  >
+                    <Rewind className="w-3.5 h-3.5" />
+                    <span>-10s</span>
+                  </button>
+                </div>
+
+                <div className="text-[10px] font-mono opacity-40 uppercase tracking-widest hidden sm:inline-block px-1 select-none">
+                  Navegación
+                </div>
+
+                <div className="flex items-center gap-1.5">
+                  <button
+                    id="btn-seek-forward"
+                    onClick={() => handleSeek(10)}
+                    className={`px-3 py-2 rounded-lg border flex items-center gap-1.5 text-xs font-mono transition-all ${
+                      tc('bg-cyan-500/10 border-cyan-500/20 text-cyan-400 hover:bg-cyan-500/20', 'bg-blue-50 border-blue-200 text-blue-600 hover:bg-blue-100')
+                    }`}
+                    title="Adelantar 10 segundos (Atajo: Flecha Derecha)"
+                  >
+                    <span>+10s</span>
+                    <FastForward className="w-3.5 h-3.5" />
+                  </button>
+
+                  <button
+                    id="btn-skip-next"
+                    onClick={handleNextVideo}
+                    className={`p-2 rounded-lg border transition-all ${
+                      tc('bg-white/5 border-white/10 hover:bg-white/10 text-white/80 hover:text-white', 'bg-slate-100 border-slate-200 hover:bg-slate-200 text-slate-700 hover:text-slate-900')
+                    }`}
+                    title="Siguiente Video (Atajo: N)"
+                  >
+                    <SkipForward className="w-4 h-4" />
+                  </button>
+                </div>
+              </div>
+
+              {/* CENTER: KEYBOARD SHORTCUT CHIPS INFO (STYLISH DECK) */}
+              <div className="hidden lg:flex items-center gap-3 text-[10px] font-mono text-white/40">
+                <span className="flex items-center gap-1 px-1.5 py-0.5 rounded bg-black/20 border border-white/5">
+                  <kbd>←</kbd>/<kbd>→</kbd> <span className="opacity-75">Saltar</span>
+                </span>
+                <span className="flex items-center gap-1 px-1.5 py-0.5 rounded bg-black/20 border border-white/5">
+                  <kbd>B</kbd>/<kbd>N</kbd> <span className="opacity-75">Prev/Sig</span>
+                </span>
+                <span className="flex items-center gap-1 px-1.5 py-0.5 rounded bg-black/20 border border-white/5">
+                  <kbd>M</kbd> <span className="opacity-75">Cine</span>
+                </span>
+              </div>
+
+              {/* RIGHT SIDE: RESIZING CONTROL PILLS (AGRANDAR VIDEO) */}
+              <div className="flex flex-wrap items-center justify-between sm:justify-end gap-2 w-full md:w-auto border-t md:border-t-0 border-white/5 pt-3 md:pt-0">
+                <div className="text-[10px] font-mono opacity-50 uppercase tracking-wider block md:hidden select-none">
+                  Tamaño del Reproductor:
+                </div>
+                
+                <div className="flex items-center gap-1 bg-black/20 p-1 rounded-lg border border-white/5">
+                  <button
+                    id="btn-size-standard"
+                    onClick={() => {
+                      setPlayerHeight('standard');
+                      awardPoints(5, 'Ajustado reproductor a tamaño estándar 16:9');
+                    }}
+                    className={`px-2.5 py-1 text-[11px] font-medium rounded transition-all ${
+                      playerHeight === 'standard'
+                        ? tc('bg-blue-600/30 text-blue-300 border border-blue-500/20 font-semibold', 'bg-blue-600 text-white font-semibold')
+                        : tc('text-white/60 hover:text-white hover:bg-white/5', 'text-slate-600 hover:text-slate-900 hover:bg-slate-100')
+                    }`}
+                  >
+                    Estándar
+                  </button>
+
+                  <button
+                    id="btn-size-tall"
+                    onClick={() => {
+                      setPlayerHeight('tall');
+                      awardPoints(15, 'Ajustado reproductor a tamaño Grande (520px)');
+                    }}
+                    className={`px-2.5 py-1 text-[11px] font-medium rounded transition-all ${
+                      playerHeight === 'tall'
+                        ? tc('bg-blue-600/30 text-blue-300 border border-blue-500/20 font-semibold', 'bg-blue-600 text-white font-semibold')
+                        : tc('text-white/60 hover:text-white hover:bg-white/5', 'text-slate-600 hover:text-slate-900 hover:bg-slate-100')
+                    }`}
+                  >
+                    Grande
+                  </button>
+
+                  <button
+                    id="btn-size-cinema"
+                    onClick={() => {
+                      setPlayerHeight('cinema');
+                      awardPoints(25, 'Ajustado reproductor a tamaño Ultra (650px)');
+                    }}
+                    className={`px-2.5 py-1 text-[11px] font-medium rounded transition-all ${
+                      playerHeight === 'cinema'
+                        ? tc('bg-blue-600/30 text-blue-300 border border-blue-500/20 font-semibold', 'bg-blue-600 text-white font-semibold')
+                        : tc('text-white/60 hover:text-white hover:bg-white/5', 'text-slate-600 hover:text-slate-900 hover:bg-slate-100')
+                    }`}
+                  >
+                    Ultra
+                  </button>
+                </div>
+
+                {/* CINEMA MODE TOGGLE */}
+                <button
+                  id="btn-cinema-mode-toggle"
+                  onClick={() => {
+                    setCinemaMode(!cinemaMode);
+                    awardPoints(20, cinemaMode ? 'Saliendo de Modo Cine' : 'Iniciando Modo Cine');
+                  }}
+                  className={`p-2 rounded-lg border transition-all flex items-center gap-1.5 ${
+                    cinemaMode
+                      ? tc('bg-purple-500/20 border-purple-500/30 text-purple-300 hover:bg-purple-500/30', 'bg-purple-100 border-purple-300 text-purple-700 hover:bg-purple-200')
+                      : tc('bg-white/5 border-white/10 hover:bg-white/10 text-white/80 hover:text-white', 'bg-slate-100 border-slate-200 hover:bg-slate-200 text-slate-700 hover:text-slate-900')
+                  }`}
+                  title={cinemaMode ? "Reducir a Ancho Normal" : "Agrandar a Ancho Completo (Modo Cine)"}
+                >
+                  {cinemaMode ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
+                </button>
+              </div>
+            </div>
+          )}
 
           {/* ACTIVE VIDEO INFO METADATA */}
           {activeVideo && (
