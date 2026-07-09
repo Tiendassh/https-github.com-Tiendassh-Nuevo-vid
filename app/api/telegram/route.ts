@@ -15,18 +15,46 @@ function getEmbedUrl(rawUrl: string): string | null {
     }
   }
 
+  // YouTube Shorts support
+  if (url.includes('/shorts/')) {
+    const parts = url.split('/shorts/');
+    if (parts[1]) {
+      const id = parts[1].split(/[?&#]/)[0];
+      if (id && id.length === 11) {
+        return `https://www.youtube.com/embed/${id}?autoplay=1&mute=0&modestbranding=1&enablejsapi=1`;
+      }
+    }
+  }
+
   // YouTube matchers
   const ytReg1 = /(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/)([^"&?\/ ]{11})/i;
   const ytMatch1 = url.match(ytReg1);
   if (ytMatch1 && ytMatch1[1]) {
-    return `https://www.youtube.com/embed/${ytMatch1[1]}`;
+    return `https://www.youtube.com/embed/${ytMatch1[1]}?autoplay=1&mute=0&modestbranding=1&enablejsapi=1`;
   }
 
   // Vimeo matchers
   const vimeoReg = /(?:vimeo\.com\/|player\.vimeo\.com\/video\/)(\d+)/i;
   const vimeoMatch = url.match(vimeoReg);
   if (vimeoMatch && vimeoMatch[1]) {
-    return `https://player.vimeo.com/video/${vimeoMatch[1]}`;
+    return `https://player.vimeo.com/video/${vimeoMatch[1]}?autoplay=1`;
+  }
+
+  // Twitch support
+  if (url.includes('twitch.tv/')) {
+    const parts = url.split('twitch.tv/');
+    if (parts[1]) {
+      const channelOrVideo = parts[1].split(/[?&#]/)[0];
+      if (channelOrVideo) {
+        const isTwitchVideo = channelOrVideo.startsWith('videos/');
+        if (isTwitchVideo) {
+          const videoId = channelOrVideo.substring(7);
+          return `https://player.twitch.tv/?video=${videoId}&autoplay=true`;
+        } else {
+          return `https://player.twitch.tv/?channel=${channelOrVideo}&autoplay=true`;
+        }
+      }
+    }
   }
 
   // Already an embed url

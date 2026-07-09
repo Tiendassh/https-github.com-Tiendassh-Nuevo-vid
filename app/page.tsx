@@ -493,6 +493,19 @@ export default function Home() {
   }, []);
 
   const togglePlayPause = useCallback(() => {
+    const videoEl = document.getElementById('main-video-element') as HTMLVideoElement;
+    if (videoEl) {
+      const nextPlayState = !isPlaying;
+      if (nextPlayState) {
+        videoEl.play().catch(() => {});
+      } else {
+        videoEl.pause();
+      }
+      setIsPlaying(nextPlayState);
+      awardPoints(5, nextPlayState ? 'Video reproducido' : 'Video pausado');
+      return;
+    }
+
     const iframe = document.getElementById('main-video-iframe') as HTMLIFrameElement;
     if (iframe && iframe.contentWindow) {
       const nextPlayState = !isPlaying;
@@ -507,6 +520,13 @@ export default function Home() {
   }, [isPlaying, awardPoints]);
 
   const handleSeek = useCallback((secondsOffset: number) => {
+    const videoEl = document.getElementById('main-video-element') as HTMLVideoElement;
+    if (videoEl) {
+      const targetTime = Math.max(0, videoEl.currentTime + secondsOffset);
+      videoEl.currentTime = targetTime;
+      return;
+    }
+
     const iframe = document.getElementById('main-video-iframe') as HTMLIFrameElement;
     if (iframe && iframe.contentWindow) {
       const targetTime = Math.max(0, ytTimeRef.current + secondsOffset);
@@ -902,6 +922,14 @@ export default function Home() {
     if (!url) return '';
     const trimmed = url.trim();
     
+    // Support iframe code directly
+    if (trimmed.includes('<iframe') || trimmed.includes('src=')) {
+      const srcMatch = trimmed.match(/src=["']([^"']+)["']/i);
+      if (srcMatch && srcMatch[1]) {
+        return srcMatch[1];
+      }
+    }
+
     if (trimmed.includes('/embed/') || trimmed.includes('player.vimeo.com/video/')) {
       if (trimmed.includes('youtube.com') && !trimmed.includes('enablejsapi=1')) {
         return trimmed.includes('?') ? `${trimmed}&enablejsapi=1` : `${trimmed}?enablejsapi=1`;
@@ -909,6 +937,17 @@ export default function Home() {
       return trimmed;
     }
     
+    // YouTube Shorts support
+    if (trimmed.includes('/shorts/')) {
+      const parts = trimmed.split('/shorts/');
+      if (parts[1]) {
+        const id = parts[1].split(/[?&#]/)[0];
+        if (id && id.length === 11) {
+          return `https://www.youtube.com/embed/${id}?autoplay=1&mute=0&modestbranding=1&enablejsapi=1`;
+        }
+      }
+    }
+
     // YouTube standard watch URL
     let regExp = /^.*(youtu.be\/|v\/|u\/\w\/|embed\/|watch\?v=|\&v=)([^#\&\?]*).*/;
     let match = trimmed.match(regExp);
@@ -921,6 +960,23 @@ export default function Home() {
     match = trimmed.match(regExp);
     if (match && match[6]) {
       return `https://player.vimeo.com/video/${match[6]}?autoplay=1`;
+    }
+
+    // Twitch support
+    if (trimmed.includes('twitch.tv/')) {
+      const parts = trimmed.split('twitch.tv/');
+      if (parts[1]) {
+        const channelOrVideo = parts[1].split(/[?&#]/)[0];
+        if (channelOrVideo) {
+          const isTwitchVideo = channelOrVideo.startsWith('videos/');
+          if (isTwitchVideo) {
+            const videoId = channelOrVideo.substring(7);
+            return `https://player.twitch.tv/?video=${videoId}&parent=${window.location.hostname}&autoplay=true`;
+          } else {
+            return `https://player.twitch.tv/?channel=${channelOrVideo}&parent=${window.location.hostname}&autoplay=true`;
+          }
+        }
+      }
     }
     
     return trimmed;
@@ -1751,15 +1807,26 @@ services:
                   : 'aspect-video'
             } ${tc('border-white/10', 'border-slate-300')}`}>
               {activeVideo ? (
-                <iframe
-                  id="main-video-iframe"
-                  src={activeVideo.url}
-                  title={activeVideo.title}
-                  frameBorder="0"
-                  allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
-                  allowFullScreen
-                  className="w-full h-full"
-                ></iframe>
+                activeVideo.url.match(/\.(mp4|webm|ogg)($|\?)/i) ? (
+                  <video
+                    id="main-video-element"
+                    src={activeVideo.url}
+                    controls
+                    autoPlay
+                    className="w-full h-full object-contain"
+                    style={{ background: 'black' }}
+                  />
+                ) : (
+                  <iframe
+                    id="main-video-iframe"
+                    src={activeVideo.url}
+                    title={activeVideo.title}
+                    frameBorder="0"
+                    allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+                    allowFullScreen
+                    className="w-full h-full"
+                  ></iframe>
+                )
               ) : (
                 <div className="w-full h-full flex flex-col items-center justify-center p-6 text-center text-white/50">
                   <Play className="w-12 h-12 text-white/20 mb-2 animate-bounce" />
@@ -1768,6 +1835,29 @@ services:
               )}
             </div>
           </div>
+
+          {/* PLAYBACK TIP & ORIGINAL LINK (TROUBLESHOOTER) */}
+          {activeVideo && (
+            <div className={`mt-3 flex flex-col sm:flex-row items-center justify-between gap-3 p-3.5 rounded-2xl border text-xs transition-all ${
+              tc('bg-[#0E0F12]/80 border-white/5 text-white/70', 'bg-slate-50 border-slate-200 text-slate-600')
+            }`}>
+              <div className="flex items-start gap-2">
+                <Info className="w-4 h-4 text-blue-500 mt-0.5 shrink-0" />
+                <p className="leading-relaxed">
+                  💡 <strong>¿No reproduce o sale error?</strong> Los navegadores modernos a veces bloquean la reproducción automática o restringen embeds de YouTube dentro de la vista previa de AI Studio. Haz clic en el reproductor para activarlo, usa los controles de abajo o pulsa en <strong>Ver Original</strong>.
+                </p>
+              </div>
+              <a 
+                href={activeVideo.url} 
+                target="_blank" 
+                rel="noopener noreferrer"
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-bold text-xs bg-blue-600/10 hover:bg-blue-600/20 text-blue-400 border border-blue-500/25 transition-all shrink-0 uppercase tracking-wider"
+              >
+                <span>Ver Original</span>
+                <ExternalLink className="w-3.5 h-3.5" />
+              </a>
+            </div>
+          )}
 
           {/* VIDEO CONTROLS: PLAYBACK SPEED, JUMP, & RESIZING (CONSOLA EN PANTALLA) */}
           {activeVideo && (
