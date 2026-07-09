@@ -225,6 +225,9 @@ export default function Home() {
   const [serverStatus, setServerStatus] = useState<string>('HEALTHY');
   const [serverUptime, setServerUptime] = useState<number>(0);
   const [nodeVersion, setNodeVersion] = useState<string>('');
+  const [hasTelegramToken, setHasTelegramToken] = useState<boolean>(false);
+  const [customBotToken, setCustomBotToken] = useState<string>('');
+  const [showRealBotGuide, setShowRealBotGuide] = useState<boolean>(true);
   
   // Simulated Telegram Chat State
   const [simulatedChat, setSimulatedChat] = useState<Array<{ id: string; sender: 'user' | 'bot'; text: string; timestamp: string }>>([
@@ -465,6 +468,7 @@ export default function Home() {
         setServerStatus(data.status || 'HEALTHY');
         setServerUptime(data.uptime || 0);
         setNodeVersion(data.nodeVersion || '');
+        setHasTelegramToken(!!data.hasTelegramToken);
 
         // If there are videos in the server database, let's merge them into our videos list!
         if (Array.isArray(data.videos) && data.videos.length > 0) {
@@ -2682,14 +2686,14 @@ services:
                     </span>
                   </div>
                   <p className={`text-[11px] leading-relaxed ${tc('text-white/70', 'text-slate-600')}`}>
-                    Canal de sincronización para @Start_vidroxbot. Aquí puedes configurar, supervisar y simular las peticiones remotas del bot en tiempo real.
+                    Canal de sincronización para {telegramUrl.split('/').pop() || '@Start_vidroxbot'}. Aquí puedes configurar, supervisar y simular las peticiones remotas del bot en tiempo real.
                   </p>
 
                   <div className="mt-1 flex flex-col gap-1.5 text-[10px] font-mono bg-black/30 p-2.5 rounded-lg border border-white/5">
                     <div className="flex justify-between items-center">
                       <span className="text-white/40">BOT ACTIVO:</span>
-                      <a href="http://t.me/Start_vidroxbot" target="_blank" rel="noreferrer" className="text-cyan-400 hover:underline flex items-center gap-1">
-                        @Start_vidroxbot <ExternalLink className="w-2.5 h-2.5" />
+                      <a href={telegramUrl} target="_blank" rel="noreferrer" className="text-cyan-400 hover:underline flex items-center gap-1">
+                        {telegramUrl.split('/').pop() || '@Start_vidroxbot'} <ExternalLink className="w-2.5 h-2.5" />
                       </a>
                     </div>
                     <div className="flex justify-between items-center">
@@ -2699,6 +2703,109 @@ services:
                       </span>
                     </div>
                   </div>
+                </div>
+
+                {/* DYNAMIC TELEGRAM SETUP & TROUBLESHOOTING GUIDE */}
+                <div className={`p-4 rounded-xl border flex flex-col gap-3 transition-all ${
+                  tc('bg-[#0E0F12]/80 border-white/10 text-white', 'bg-white border-slate-200 text-slate-800')
+                }`}>
+                  <div className="flex items-center justify-between border-b border-white/5 pb-2">
+                    <div className="flex items-center gap-1.5">
+                      <Terminal className="w-4 h-4 text-cyan-400" />
+                      <span className="text-xs font-bold tracking-wide uppercase font-mono">Guía de Inicio del Bot Real</span>
+                    </div>
+                    <button
+                      onClick={() => setShowRealBotGuide(!showRealBotGuide)}
+                      className={`text-[10px] font-mono hover:underline ${tc('text-blue-400', 'text-blue-600')}`}
+                    >
+                      {showRealBotGuide ? '[ Ocultar ]' : '[ Mostrar ]'}
+                    </button>
+                  </div>
+
+                  {showRealBotGuide && (
+                    <div className="space-y-3.5 text-xs animate-in fade-in duration-200">
+                      <div className="p-2.5 rounded-lg bg-yellow-500/10 border border-yellow-500/20 text-[11px] leading-relaxed text-yellow-300">
+                        ⚠️ <strong className="font-semibold">¿Por qué no inicia tu Bot?</strong> El bot <span className="font-mono underline">@Start_vidroxbot</span> es una plantilla predeterminada. Para usar el bot de forma real, necesitas crear tu propio bot en Telegram y conectar esta aplicación.
+                      </div>
+
+                      <div className="space-y-3">
+                        <div className="flex gap-2">
+                          <div className="w-5 h-5 rounded-full bg-blue-500/20 text-blue-400 flex items-center justify-center text-[10px] font-bold font-mono flex-shrink-0 mt-0.5">1</div>
+                          <div>
+                            <p className="font-bold text-[11px]">Crea tu Bot en Telegram</p>
+                            <p className={`text-[11px] mt-0.5 ${tc('text-white/60', 'text-slate-500')}`}>
+                              Busca a <a href="https://t.me/BotFather" target="_blank" rel="noreferrer" className="text-cyan-400 hover:underline">@BotFather</a> en Telegram, envíale el comando <code className="px-1 py-0.5 bg-black/30 rounded font-mono text-[10px]">/newbot</code>, sigue los pasos y copia el <strong>Token de API</strong> que te proporcione.
+                            </p>
+                          </div>
+                        </div>
+
+                        <div className="flex gap-2">
+                          <div className="w-5 h-5 rounded-full bg-blue-500/20 text-blue-400 flex items-center justify-center text-[10px] font-bold font-mono flex-shrink-0 mt-0.5">2</div>
+                          <div>
+                            <p className="font-bold text-[11px]">Configura las Variables de Entorno</p>
+                            <p className={`text-[11px] mt-0.5 ${tc('text-white/60', 'text-slate-500')}`}>
+                              Ve al menú de <strong>Configuración (Settings)</strong> en AI Studio, y en la sección de secretos agrega:
+                              <code className="block mt-1 p-1.5 bg-black/40 rounded font-mono text-[10px] text-blue-300 border border-white/5 select-all">
+                                TELEGRAM_BOT_TOKEN=&quot;TU_TOKEN_AQUÍ&quot;
+                              </code>
+                            </p>
+                            <div className="mt-1.5 flex items-center gap-1.5 text-[10px]">
+                              <span>Estado en el servidor:</span>
+                              {hasTelegramToken ? (
+                                <span className="text-green-400 font-bold font-mono flex items-center gap-1 bg-green-500/10 px-1.5 py-0.5 rounded border border-green-500/20">
+                                  ● CONFIGURADO 🟢
+                                </span>
+                              ) : (
+                                <span className="text-red-400 font-bold font-mono flex items-center gap-1 bg-red-500/10 px-1.5 py-0.5 rounded border border-red-500/20">
+                                  ● NO DETECTADO 🔴 (Agrégalo en variables de entorno)
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="flex gap-2 border-t border-white/5 pt-3">
+                          <div className="w-5 h-5 rounded-full bg-blue-500/20 text-blue-400 flex items-center justify-center text-[10px] font-bold font-mono flex-shrink-0 mt-0.5">3</div>
+                          <div className="flex-1">
+                            <p className="font-bold text-[11px]">Vincula y Activa el Webhook</p>
+                            <p className={`text-[11px] mt-0.5 ${tc('text-white/60', 'text-slate-500')}`}>
+                              Para que Telegram reenvíe los videos que reciba el bot a este reproductor web en vivo, debes enlazar el Webhook. Pega el Token de tu Bot aquí para abrir el activador directo:
+                            </p>
+
+                            <div className="mt-2.5 flex flex-col sm:flex-row gap-2">
+                              <input
+                                type="text"
+                                value={customBotToken}
+                                onChange={(e) => setCustomBotToken(e.target.value)}
+                                placeholder="Pega el Token de tu bot creado..."
+                                className="flex-1 bg-black/40 border border-white/10 rounded px-2.5 py-1.5 text-xs text-white placeholder-white/30 font-mono focus:outline-none focus:border-cyan-500"
+                              />
+                              <button
+                                type="button"
+                                disabled={!customBotToken.trim()}
+                                onClick={() => {
+                                  const webhookUrl = typeof window !== 'undefined' ? `${window.location.origin}/api/telegram` : '/api/telegram';
+                                  const cleanToken = customBotToken.trim();
+                                  const finalLink = `https://api.telegram.org/bot${cleanToken}/setWebhook?url=${encodeURIComponent(webhookUrl)}`;
+                                  window.open(finalLink, '_blank');
+                                  
+                                  setSimulatedChat(prev => [...prev, {
+                                    id: 'setup-success-' + Date.now(),
+                                    sender: 'bot',
+                                    text: `⚙️ [WEBHOOK] Intentando registrar Webhook de Telegram...\nSe abrió una nueva pestaña para vincular tu bot.\n\nVerifica que la pestaña indique:\n{"ok":true,"result":true,"description":"Webhook was set"}`,
+                                    timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+                                  }]);
+                                }}
+                                className="px-3 py-1.5 bg-cyan-600 hover:bg-cyan-500 disabled:bg-zinc-800 disabled:text-zinc-500 text-white rounded text-[11px] font-bold font-mono uppercase tracking-wider transition-colors shrink-0"
+                              >
+                                Activar Webhook ⚡
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  )}
                 </div>
 
                 {/* Grid Server & DB Status */}

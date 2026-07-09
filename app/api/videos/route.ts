@@ -26,7 +26,8 @@ export async function GET(req: NextRequest) {
       status: 'HEALTHY',
       uptime: process.uptime(),
       platform: process.platform,
-      nodeVersion: process.version
+      nodeVersion: process.version,
+      hasTelegramToken: !!process.env.TELEGRAM_BOT_TOKEN
     });
   } catch (error: any) {
     addConnectionLog(
