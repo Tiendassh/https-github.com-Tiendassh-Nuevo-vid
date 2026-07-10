@@ -50,7 +50,12 @@ import {
   Settings,
   Bot,
   Languages,
-  RefreshCw
+  RefreshCw,
+  Mic,
+  MicOff,
+  Users,
+  Phone,
+  PhoneOff,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
@@ -336,6 +341,579 @@ export default function Home() {
   const [newLiveChatMessageText, setNewLiveChatMessageText] = useState('');
   const [newInboxMessageText, setNewInboxMessageText] = useState('');
   const [activeInboxRecipient, setActiveInboxRecipient] = useState<string>('invitado');
+
+  // --- CO-WATCHING & VOICE CHAT STATES ---
+  const [socialTab, setSocialTab] = useState<'chat' | 'inbox' | 'room'>('chat');
+  const [coWatchRoom, setCoWatchRoom] = useState<any | null>(null);
+  const [coWatchRoomCode, setCoWatchRoomCode] = useState('');
+  const [coWatchNickname, setCoWatchNickname] = useState('');
+  const [coWatchError, setCoWatchError] = useState('');
+  const [coWatchSuccess, setCoWatchSuccess] = useState('');
+  const [coWatchLoading, setCoWatchLoading] = useState(false);
+  const [coWatchChatMsg, setCoWatchChatMsg] = useState('');
+  const [coWatchVoiceState, setCoWatchVoiceState] = useState<'disconnected' | 'connecting' | 'connected' | 'muted' | 'error'>('disconnected');
+  const [coWatchMicMuted, setCoWatchMicMuted] = useState(false);
+
+  const pcRef = useRef<RTCPeerConnection | null>(null);
+  const localStreamRef = useRef<MediaStream | null>(null);
+  const remoteAudioRef = useRef<HTMLAudioElement | null>(null);
+  const processedSignalIdsRef = useRef<Set<string>>(new Set());
+  const isInitiatorRef = useRef<boolean>(false);
+  const isRemoteUpdateRef = useRef<boolean>(false);
+
+  // Broadcast local video state changes to room
+  const broadcastVideoState = useCallback((url: string, title: string, playing: boolean, currentTime: number) => {
+    if (!coWatchRoom) return;
+    const nickname = coWatchNickname || (currentUser ? currentUser.username : 'Invitado');
+    
+    fetch('/api/room-sync', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        action: 'updateVideo',
+        roomId: coWatchRoom.roomId,
+        username: nickname,
+        videoState: {
+          url,
+          title,
+          playing,
+          currentTime
+        }
+      })
+    }).then(res => res.json())
+      .then(data => {
+        if (data.success) {
+          setCoWatchRoom((prev: any) => prev ? { ...prev, videoState: data.videoState } : null);
+        }
+      }).catch(err => console.error('Error broadcasting video state:', err));
+  }, [coWatchRoom?.roomId, coWatchNickname, currentUser]);
+
+  // Sync player state with remote updates
+  const syncVideoPlayerWithRoom = useCallback((room: any) => {
+    if (!room || !room.videoState) return;
+    const state = room.videoState;
+    const nickname = coWatchNickname || (currentUser ? currentUser.username : 'Invitado');
+
+    // Skip if we made the change
+    if (state.sender === nickname) {
+      return;
+    }
+
+    // 1. URL change
+    if (state.url && (!activeVideo || activeVideo.url !== state.url)) {
+      isRemoteUpdateRef.current = true;
+      const foundVideo = videos.find(v => v.url === state.url);
+      if (foundVideo) {
+        setActiveVideo(foundVideo);
+      } else {
+        const customVideo = {
+          id: 'room-sync-' + Date.now(),
+          title: state.title || 'Vídeo Sincronizado 👥',
+          url: state.url,
+          author: state.sender,
+          category: 'Compartido en Sala 👥',
+          description: 'Vídeo sincronizado en tiempo real por tu compañero de sala.',
+          isCustom: true
+        };
+        setActiveVideo(customVideo);
+      }
+      return;
+    }
+
+    // 2. Play / Pause & Time Sync
+    const videoEl = document.getElementById('main-video-element') as HTMLVideoElement;
+    if (videoEl) {
+      if (state.playing && videoEl.paused) {
+        isRemoteUpdateRef.current = true;
+        videoEl.play().catch(() => {});
+        setIsPlaying(true);
+      } else if (!state.playing && !videoEl.paused) {
+        isRemoteUpdateRef.current = true;
+        videoEl.pause();
+        setIsPlaying(false);
+      }
+
+      if (Math.abs(videoEl.currentTime - state.currentTime) > 4) {
+        isRemoteUpdateRef.current = true;
+        videoEl.currentTime = state.currentTime;
+      }
+    } else {
+      const iframe = document.getElementById('main-video-iframe') as HTMLIFrameElement;
+      if (iframe && iframe.contentWindow) {
+        if (state.playing && !isPlaying) {
+          isRemoteUpdateRef.current = true;
+          iframe.contentWindow.postMessage(JSON.stringify({
+            event: 'command',
+            func: 'playVideo',
+            args: []
+          }), '*');
+          setIsPlaying(true);
+        } else if (!state.playing && isPlaying) {
+          isRemoteUpdateRef.current = true;
+          iframe.contentWindow.postMessage(JSON.stringify({
+            event: 'command',
+            func: 'pauseVideo',
+            args: []
+          }), '*');
+          setIsPlaying(false);
+        }
+
+        if (Math.abs(ytTimeRef.current - state.currentTime) > 4) {
+          isRemoteUpdateRef.current = true;
+          iframe.contentWindow.postMessage(JSON.stringify({
+            event: 'command',
+            func: 'seekTo',
+            args: [state.currentTime, true]
+          }), '*');
+          ytTimeRef.current = state.currentTime;
+        }
+      }
+    }
+  }, [activeVideo, videos, coWatchNickname, currentUser, isPlaying]);
+
+  // Clean up WebRTC peer connection & media tracks
+  const cleanupWebRTC = useCallback(() => {
+    if (pcRef.current) {
+      pcRef.current.close();
+      pcRef.current = null;
+    }
+    if (localStreamRef.current) {
+      localStreamRef.current.getTracks().forEach(track => track.stop());
+      localStreamRef.current = null;
+    }
+    if (remoteAudioRef.current) {
+      remoteAudioRef.current.srcObject = null;
+      remoteAudioRef.current.remove();
+      remoteAudioRef.current = null;
+    }
+    processedSignalIdsRef.current.clear();
+    setCoWatchVoiceState('disconnected');
+    setCoWatchMicMuted(false);
+  }, []);
+
+  // WebRTC Call initiator / acceptor logic
+  const startWebRTCCall = async (roomId: string, nickname: string, isHost: boolean) => {
+    try {
+      setCoWatchVoiceState('connecting');
+
+      // 1. Get microphone stream
+      let stream: MediaStream;
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+        localStreamRef.current = stream;
+      } catch (err) {
+        console.error('Error accessing microphone:', err);
+        setCoWatchVoiceState('error');
+        setCoWatchError('No se pudo acceder al micrófono. Por favor permite los permisos.');
+        return;
+      }
+
+      // 2. Create connection
+      const pc = new RTCPeerConnection({
+        iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+      });
+      pcRef.current = pc;
+
+      // Add tracks
+      stream.getTracks().forEach(track => {
+        pc.addTrack(track, stream);
+      });
+
+      // Handle events
+      pc.onconnectionstatechange = () => {
+        if (pc.connectionState === 'connected') {
+          setCoWatchVoiceState('connected');
+          awardPoints(30, '¡Llamada de voz WebRTC establecida con éxito! 🎙️');
+        } else if (pc.connectionState === 'failed' || pc.connectionState === 'closed') {
+          setCoWatchVoiceState('disconnected');
+        }
+      };
+
+      pc.ontrack = (event) => {
+        const remoteStream = event.streams[0];
+        if (remoteStream) {
+          let audioEl = document.getElementById('remote-audio-element') as HTMLAudioElement;
+          if (!audioEl) {
+            audioEl = document.createElement('audio');
+            audioEl.id = 'remote-audio-element';
+            audioEl.autoplay = true;
+            audioEl.style.display = 'none';
+            document.body.appendChild(audioEl);
+          }
+          audioEl.srcObject = remoteStream;
+          remoteAudioRef.current = audioEl;
+        }
+      };
+
+      pc.onicecandidate = (event) => {
+        if (event.candidate) {
+          fetch('/api/room-sync', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              action: 'sendSignal',
+              roomId,
+              username: nickname,
+              signal: {
+                type: 'candidate',
+                candidate: event.candidate
+              }
+            })
+          }).catch(err => console.error('Error sending candidate:', err));
+        }
+      };
+
+      // 3. Create Offer if Host
+      if (isHost) {
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+
+        await fetch('/api/room-sync', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            action: 'sendSignal',
+            roomId,
+            username: nickname,
+            signal: {
+              type: 'offer',
+              sdp: offer
+            }
+          })
+        });
+      }
+    } catch (err) {
+      console.error('Error setting up WebRTC Call:', err);
+      setCoWatchVoiceState('error');
+    }
+  };
+
+  // Handle incoming signals from the server
+  const handleIncomingSignal = async (sig: any) => {
+    const roomId = coWatchRoom?.roomId;
+    const nickname = coWatchNickname || (currentUser ? currentUser.username : 'Invitado');
+    if (!roomId) return;
+
+    try {
+      if (sig.type === 'offer') {
+        if (pcRef.current) {
+          cleanupWebRTC();
+        }
+
+        await startWebRTCCall(roomId, nickname, false);
+        const pc = pcRef.current;
+        if (!pc) return;
+
+        await pc.setRemoteDescription(new RTCSessionDescription(sig.sdp));
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
+
+        await fetch('/api/room-sync', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            action: 'sendSignal',
+            roomId,
+            username: nickname,
+            signal: {
+              type: 'answer',
+              sdp: answer
+            }
+          })
+        });
+      } else if (sig.type === 'answer') {
+        const pc = pcRef.current;
+        if (pc && pc.signalingState !== 'stable') {
+          await pc.setRemoteDescription(new RTCSessionDescription(sig.sdp));
+        }
+      } else if (sig.type === 'candidate') {
+        const pc = pcRef.current;
+        if (pc && pc.remoteDescription) {
+          await pc.addIceCandidate(new RTCIceCandidate(sig.candidate));
+        }
+      }
+    } catch (err) {
+      console.error('Error processing incoming signal:', err);
+    }
+  };
+
+  // Synchronize WebRTC signaling
+  const syncWebRTCSignaling = useCallback(async (room: any) => {
+    if (!room || coWatchVoiceState === 'disconnected') return;
+
+    const nickname = coWatchNickname || (currentUser ? currentUser.username : 'Invitado');
+    const now = Date.now();
+    const otherParticipants = room.participants.filter(
+      (p: any) => p.username.toLowerCase() !== nickname.toLowerCase() && now - p.lastActive < 10000
+    );
+
+    if (otherParticipants.length === 0) {
+      if (pcRef.current) {
+        cleanupWebRTC();
+      }
+      setCoWatchVoiceState('connecting');
+      return;
+    }
+
+    const allUsers = [...room.participants.map((p: any) => p.username)].sort();
+    const isHost = allUsers[0]?.toLowerCase() === nickname.toLowerCase();
+    isInitiatorRef.current = isHost;
+
+    try {
+      const response = await fetch(`/api/room-sync?roomId=${room.roomId}`);
+      const data = await response.json();
+      if (data.success && data.room) {
+        const roomState = data.room;
+        
+        // Fetch signals
+        const signalsRes = await fetch('/api/room-sync', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            action: 'getSignals',
+            roomId: room.roomId,
+            username: nickname
+          })
+        });
+        const signalsData = await signalsRes.json();
+        if (signalsData.success && signalsData.signals) {
+          for (const sig of signalsData.signals) {
+            if (processedSignalIdsRef.current.has(sig.id)) {
+              continue;
+            }
+            processedSignalIdsRef.current.add(sig.id);
+            await handleIncomingSignal(sig);
+          }
+        }
+      }
+    } catch (err) {
+      console.error('Error fetching signals:', err);
+    }
+
+    if (isHost && !pcRef.current && coWatchVoiceState === 'connecting') {
+      await startWebRTCCall(room.roomId, nickname, true);
+    }
+  }, [coWatchVoiceState, coWatchNickname, currentUser, cleanupWebRTC]);
+
+  // Create co-watch room
+  const handleCreateCoWatchRoom = async () => {
+    setCoWatchError('');
+    setCoWatchSuccess('');
+    setCoWatchLoading(true);
+
+    const nickname = coWatchNickname.trim() || (currentUser ? currentUser.username : 'Invitado_' + Math.floor(Math.random() * 900 + 100));
+    setCoWatchNickname(nickname);
+
+    try {
+      const response = await fetch('/api/room-sync', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'create',
+          username: nickname,
+          videoState: activeVideo ? {
+            url: activeVideo.url,
+            title: activeVideo.title,
+            playing: isPlaying,
+            currentTime: 0
+          } : undefined
+        })
+      });
+
+      const data = await response.json();
+      if (data.success) {
+        setCoWatchRoom(data.room);
+        setCoWatchSuccess('¡Sala privada creada exitosamente!');
+        awardPoints(50, 'Creó una Sala de Co-reproducción Privada 👥');
+      } else {
+        setCoWatchError(data.error || 'Error al crear la sala.');
+      }
+    } catch (err) {
+      console.error(err);
+      setCoWatchError('Error de red al crear la sala.');
+    } finally {
+      setCoWatchLoading(false);
+    }
+  };
+
+  // Join co-watch room
+  const handleJoinCoWatchRoom = async () => {
+    setCoWatchError('');
+    setCoWatchSuccess('');
+    
+    if (!coWatchRoomCode.trim()) {
+      setCoWatchError('Por favor ingresa un código de sala.');
+      return;
+    }
+
+    setCoWatchLoading(true);
+    const nickname = coWatchNickname.trim() || (currentUser ? currentUser.username : 'Invitado_' + Math.floor(Math.random() * 900 + 100));
+    setCoWatchNickname(nickname);
+
+    try {
+      const response = await fetch('/api/room-sync', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'join',
+          roomId: coWatchRoomCode.trim(),
+          username: nickname
+        })
+      });
+
+      const data = await response.json();
+      if (data.success) {
+        setCoWatchRoom(data.room);
+        setCoWatchSuccess('¡Te has unido a la sala!');
+        awardPoints(40, 'Se unió a una Sala de Co-reproducción Privada 👥');
+      } else {
+        setCoWatchError(data.error || 'Código de sala inválido o sala llena.');
+      }
+    } catch (err) {
+      console.error(err);
+      setCoWatchError('Error de red al unirse a la sala.');
+    } finally {
+      setCoWatchLoading(false);
+    }
+  };
+
+  // Leave co-watch room
+  const handleLeaveCoWatchRoom = async () => {
+    if (!coWatchRoom) return;
+
+    const nickname = coWatchNickname || (currentUser ? currentUser.username : 'Invitado');
+    try {
+      await fetch('/api/room-sync', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'leave',
+          roomId: coWatchRoom.roomId,
+          username: nickname
+        })
+      });
+    } catch (err) {
+      console.error('Error leaving room:', err);
+    }
+
+    cleanupWebRTC();
+    setCoWatchRoom(null);
+    setCoWatchRoomCode('');
+    setCoWatchSuccess('Has salido de la sala.');
+  };
+
+  // Send message in room chat
+  const handleSendRoomChatMessage = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!coWatchChatMsg.trim() || !coWatchRoom) return;
+
+    const nickname = coWatchNickname || (currentUser ? currentUser.username : 'Invitado');
+
+    try {
+      const response = await fetch('/api/room-sync', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'chat',
+          roomId: coWatchRoom.roomId,
+          username: nickname,
+          text: coWatchChatMsg.trim()
+        })
+      });
+
+      if (response.ok) {
+        setCoWatchChatMsg('');
+        const data = await response.json();
+        if (data.success) {
+          setCoWatchRoom((prev: any) => {
+            if (!prev) return null;
+            return {
+              ...prev,
+              messages: [...prev.messages, data.message]
+            };
+          });
+          awardPoints(5, 'Envió un mensaje privado de co-reproducción');
+        }
+      }
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  // Toggle local mic mute
+  const handleToggleMic = () => {
+    const nextState = !coWatchMicMuted;
+    setCoWatchMicMuted(nextState);
+    if (localStreamRef.current) {
+      localStreamRef.current.getAudioTracks().forEach(track => {
+        track.enabled = !nextState;
+      });
+    }
+    setCoWatchVoiceState(nextState ? 'muted' : (pcRef.current?.connectionState === 'connected' ? 'connected' : 'connecting'));
+  };
+
+  // Trigger mic connection manually or automatically
+  const handleToggleVoiceConnection = () => {
+    if (coWatchVoiceState === 'disconnected') {
+      const nickname = coWatchNickname || (currentUser ? currentUser.username : 'Invitado');
+      startWebRTCCall(coWatchRoom.roomId, nickname, isInitiatorRef.current);
+      setCoWatchVoiceState('connecting');
+    } else {
+      cleanupWebRTC();
+    }
+  };
+
+  // --- ROOM POLL & SYNC EFFECT ---
+  useEffect(() => {
+    if (!coWatchRoom) return;
+
+    let active = true;
+    const nickname = coWatchNickname || (currentUser ? currentUser.username : 'Invitado');
+
+    const doSync = async () => {
+      try {
+        const response = await fetch(`/api/room-sync?roomId=${coWatchRoom.roomId}`);
+        if (!response.ok) {
+          throw new Error('Error syncing room');
+        }
+
+        const data = await response.json();
+        if (data.success && active) {
+          const updatedRoom = data.room;
+
+          // 1. Sync video playback state
+          syncVideoPlayerWithRoom(updatedRoom);
+
+          // 2. Sync voice chat signaling
+          syncWebRTCSignaling(updatedRoom);
+
+          // 3. Update room state
+          setCoWatchRoom(updatedRoom);
+        }
+      } catch (err) {
+        console.error('CoWatch sync error:', err);
+      }
+    };
+
+    const interval = setInterval(doSync, 2000);
+    return () => {
+      active = false;
+      clearInterval(interval);
+    };
+  }, [coWatchRoom?.roomId, coWatchNickname, currentUser, syncVideoPlayerWithRoom, syncWebRTCSignaling]);
+
+  // --- AUTOMATIC BROADCAST ON VIDEO SELECT ---
+  useEffect(() => {
+    if (!coWatchRoom || !activeVideo) return;
+    
+    if (isRemoteUpdateRef.current) {
+      isRemoteUpdateRef.current = false;
+      return;
+    }
+
+    broadcastVideoState(activeVideo.url, activeVideo.title, isPlaying, 0);
+  }, [activeVideo?.id, coWatchRoom?.roomId]);
+
   const [autoplayEnabled, setAutoplayEnabled] = useState(true);
   const autoplayRef = useRef(true);
   useEffect(() => {
@@ -533,6 +1111,11 @@ export default function Home() {
       }
       setIsPlaying(nextPlayState);
       awardPoints(5, nextPlayState ? 'Video reproducido' : 'Video pausado');
+      
+      // Co-watch sync broadcast
+      if (coWatchRoom && activeVideo) {
+        broadcastVideoState(activeVideo.url, activeVideo.title, nextPlayState, videoEl.currentTime);
+      }
       return;
     }
 
@@ -546,14 +1129,24 @@ export default function Home() {
       }), '*');
       setIsPlaying(nextPlayState);
       awardPoints(5, nextPlayState ? 'Video reproducido' : 'Video pausado');
+      
+      // Co-watch sync broadcast
+      if (coWatchRoom && activeVideo) {
+        broadcastVideoState(activeVideo.url, activeVideo.title, nextPlayState, ytTimeRef.current);
+      }
     }
-  }, [isPlaying, awardPoints]);
+  }, [isPlaying, awardPoints, coWatchRoom, activeVideo, broadcastVideoState]);
 
   const handleSeek = useCallback((secondsOffset: number) => {
     const videoEl = document.getElementById('main-video-element') as HTMLVideoElement;
     if (videoEl) {
       const targetTime = Math.max(0, videoEl.currentTime + secondsOffset);
       videoEl.currentTime = targetTime;
+      
+      // Co-watch sync broadcast
+      if (coWatchRoom && activeVideo) {
+        broadcastVideoState(activeVideo.url, activeVideo.title, isPlaying, targetTime);
+      }
       return;
     }
 
@@ -566,8 +1159,13 @@ export default function Home() {
         args: [targetTime, true]
       }), '*');
       ytTimeRef.current = targetTime; // Optimistic update
+      
+      // Co-watch sync broadcast
+      if (coWatchRoom && activeVideo) {
+        broadcastVideoState(activeVideo.url, activeVideo.title, isPlaying, targetTime);
+      }
     }
-  }, []);
+  }, [coWatchRoom, activeVideo, isPlaying, broadcastVideoState]);
 
   const handleNextVideo = useCallback(() => {
     if (videos.length === 0) return;
@@ -3677,7 +4275,7 @@ services:
               </div>
             )}
 
-            {/* TAB CONTENT: SOCIAL HUB (CHAT & INBOX) */}
+            {/* TAB CONTENT: SOCIAL HUB (CHAT & INBOX & PRIVATE ROOMS) */}
             {activeSidebarTab === 'social' && (
               <div className="flex flex-col gap-4 animate-in fade-in slide-in-from-bottom-3 duration-300">
                 
@@ -3686,10 +4284,11 @@ services:
                   <button
                     type="button"
                     onClick={() => {
+                      setSocialTab('chat');
                       setActiveInboxRecipient('invitado'); // Reset to default DM or general
                     }}
-                    className={`flex-1 text-center py-1.5 rounded text-[11px] font-bold uppercase tracking-wider font-mono transition-all ${
-                      activeInboxRecipient === 'invitado'
+                    className={`flex-1 text-center py-1.5 rounded text-[10px] font-bold uppercase tracking-wider font-mono transition-all ${
+                      socialTab === 'chat'
                         ? 'bg-violet-600 text-white shadow'
                         : tc('text-white/40 hover:text-white', 'text-slate-500 hover:text-slate-800')
                     }`}
@@ -3699,21 +4298,35 @@ services:
                   <button
                     type="button"
                     onClick={() => {
+                      setSocialTab('inbox');
                       setActiveInboxRecipient('Admin_Nocturno'); // Toggle to DM
                     }}
-                    className={`flex-1 text-center py-1.5 rounded text-[11px] font-bold uppercase tracking-wider font-mono transition-all ${
-                      activeInboxRecipient !== 'invitado'
+                    className={`flex-1 text-center py-1.5 rounded text-[10px] font-bold uppercase tracking-wider font-mono transition-all ${
+                      socialTab === 'inbox'
                         ? 'bg-violet-600 text-white shadow'
                         : tc('text-white/40 hover:text-white', 'text-slate-500 hover:text-slate-800')
                     }`}
                   >
                     Bandeja Inbox 📥
                   </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSocialTab('room');
+                    }}
+                    className={`flex-1 text-center py-1.5 rounded text-[10px] font-bold uppercase tracking-wider font-mono transition-all ${
+                      socialTab === 'room'
+                        ? 'bg-violet-600 text-white shadow'
+                        : tc('text-white/40 hover:text-white', 'text-slate-500 hover:text-slate-800')
+                    }`}
+                  >
+                    Sala Privada 👥
+                  </button>
                 </div>
 
                 {/* RENDER CHAT ROOM */}
-                {activeInboxRecipient === 'invitado' ? (
-                  <div className="flex flex-col gap-3">
+                {socialTab === 'chat' && (
+                  <div className="flex flex-col gap-3 animate-in fade-in duration-200">
                     <div className={`p-4 rounded-xl border flex flex-col gap-2 transition-all ${
                       tc('bg-gradient-to-br from-violet-500/10 to-[#0A0A0B] border-violet-500/20 text-violet-400', 'bg-gradient-to-br from-violet-50 to-white border-violet-200 text-violet-800')
                     }`}>
@@ -3779,9 +4392,11 @@ services:
                       </form>
                     </div>
                   </div>
-                ) : (
-                  /* RENDER USER-TO-USER INBOX MESSAGE DRAWER */
-                  <div className="flex flex-col gap-3">
+                )}
+
+                {/* RENDER USER-TO-USER INBOX MESSAGE DRAWER */}
+                {socialTab === 'inbox' && (
+                  <div className="flex flex-col gap-3 animate-in fade-in duration-200">
                     <div className={`p-4 rounded-xl border flex flex-col gap-2 transition-all ${
                       tc('bg-gradient-to-br from-indigo-500/10 to-[#0A0A0B] border-indigo-500/20 text-indigo-400', 'bg-gradient-to-br from-indigo-50 to-white border-indigo-200 text-indigo-800')
                     }`}>
@@ -3868,6 +4483,318 @@ services:
                         </button>
                       </form>
                     </div>
+                  </div>
+                )}
+
+                {/* RENDER PRIVATE CO-WATCHING AND AUDIO CHAT ROOMS */}
+                {socialTab === 'room' && (
+                  <div className="flex flex-col gap-3 animate-in fade-in duration-200">
+                    <div className={`p-4 rounded-xl border flex flex-col gap-2 transition-all ${
+                      tc('bg-gradient-to-br from-indigo-500/10 to-[#0A0A0B] border-indigo-500/20 text-indigo-400', 'bg-gradient-to-br from-indigo-50 to-white border-indigo-200 text-indigo-800')
+                    }`}>
+                      <h4 className="font-bold text-xs uppercase tracking-wider font-mono flex items-center gap-1.5">
+                        <Users className="w-4 h-4 text-violet-400" />
+                        Sala de Co-reproducción Privada
+                      </h4>
+                      <p className={`text-xs leading-relaxed ${tc('text-white/60', 'text-slate-600')}`}>
+                        ¡Mira tus vídeos sincronizados en tiempo real con amigos, chatea en privado y habla por micrófono en directo!
+                      </p>
+                    </div>
+
+                    {coWatchError && (
+                      <div className="p-3 rounded-lg text-xs bg-red-500/10 border border-red-500/20 text-red-400 font-mono">
+                        {coWatchError}
+                      </div>
+                    )}
+
+                    {coWatchSuccess && (
+                      <div className="p-3 rounded-lg text-xs bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 font-mono">
+                        {coWatchSuccess}
+                      </div>
+                    )}
+
+                    {/* NOT IN ROOM: SETUP FORM */}
+                    {!coWatchRoom ? (
+                      <div className="flex flex-col gap-3">
+                        <div className={`p-4 rounded-xl border flex flex-col gap-3 ${tc('bg-[#0A0A0B]/60 border-white/5', 'bg-slate-50 border-slate-200')}`}>
+                          
+                          <div className="flex flex-col gap-1">
+                            <label className={`text-[10px] font-bold font-mono tracking-wider ${tc('text-white/40', 'text-slate-500')}`}>TU APODO / USERNAME:</label>
+                            <input
+                              type="text"
+                              maxLength={18}
+                              placeholder={currentUser ? currentUser.username : "Invitado_Nocturno"}
+                              value={coWatchNickname}
+                              onChange={(e) => setCoWatchNickname(e.target.value)}
+                              className={`w-full border rounded-lg px-3 py-2 text-xs focus:outline-none focus:border-violet-500 font-mono ${
+                                tc('bg-black/50 border-white/10 text-white placeholder-white/25', 'bg-white border-slate-200 text-slate-800 placeholder-slate-400')
+                              }`}
+                            />
+                          </div>
+
+                          <div className="grid grid-cols-1 gap-2.5 mt-2">
+                            <button
+                              type="button"
+                              onClick={handleCreateCoWatchRoom}
+                              disabled={coWatchLoading}
+                              className="w-full py-2.5 bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-500 hover:to-indigo-500 text-white font-bold text-xs uppercase tracking-wider rounded-lg transition-all shadow-md hover:shadow-lg disabled:opacity-50 flex items-center justify-center gap-2"
+                            >
+                              {coWatchLoading ? (
+                                <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                              ) : (
+                                <Users className="w-3.5 h-3.5" />
+                              )}
+                              Crear Nueva Sala Privada
+                            </button>
+
+                            <div className="flex items-center justify-center my-1">
+                              <span className="h-[1px] w-full bg-white/5" />
+                              <span className="text-[9px] font-mono font-bold text-white/30 px-3 shrink-0">O UNIRSE A UNA EXISTENTE</span>
+                              <span className="h-[1px] w-full bg-white/5" />
+                            </div>
+
+                            <div className="flex flex-col gap-1">
+                              <label className={`text-[10px] font-bold font-mono tracking-wider ${tc('text-white/40', 'text-slate-500')}`}>CÓDIGO DE SALA:</label>
+                              <div className="flex gap-2">
+                                <input
+                                  type="text"
+                                  placeholder="CW-A8X9"
+                                  maxLength={7}
+                                  value={coWatchRoomCode}
+                                  onChange={(e) => setCoWatchRoomCode(e.target.value.toUpperCase())}
+                                  className={`flex-1 border rounded-lg px-3 py-1.5 text-xs focus:outline-none focus:border-violet-500 font-mono ${
+                                    tc('bg-black/50 border-white/10 text-white placeholder-white/25', 'bg-white border-slate-200 text-slate-800 placeholder-slate-400')
+                                  }`}
+                                />
+                                <button
+                                  type="button"
+                                  onClick={handleJoinCoWatchRoom}
+                                  disabled={coWatchLoading || !coWatchRoomCode.trim()}
+                                  className="px-4 bg-zinc-800 hover:bg-zinc-700 text-white border border-white/10 font-bold text-xs uppercase tracking-wider rounded-lg transition-all disabled:opacity-50"
+                                >
+                                  Unirse
+                                </button>
+                              </div>
+                            </div>
+
+                          </div>
+
+                        </div>
+                      </div>
+                    ) : (
+                      // IN ACTIVE CO-WATCHING ROOM
+                      <div className="flex flex-col gap-3">
+                        
+                        {/* Room Info, Code, and Active Voice Controls */}
+                        <div className={`p-4 rounded-xl border flex flex-col gap-3 ${tc('bg-[#0A0A0B]/80 border-white/10', 'bg-slate-50 border-slate-200')}`}>
+                          
+                          {/* Top Room status bar */}
+                          <div className="flex items-center justify-between border-b border-white/5 pb-2">
+                            <div className="flex flex-col">
+                              <span className="text-[9px] font-mono font-bold text-white/40 uppercase">CÓDIGO DE TU SALA:</span>
+                              <div className="flex items-center gap-1.5 mt-0.5">
+                                <span className="text-sm font-black font-mono tracking-widest text-violet-400">{coWatchRoom.roomId}</span>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    navigator.clipboard.writeText(coWatchRoom.roomId);
+                                    setCoWatchSuccess('¡Código de sala copiado al portapapeles!');
+                                    setTimeout(() => setCoWatchSuccess(''), 3000);
+                                  }}
+                                  className="px-1.5 py-0.5 rounded bg-white/5 hover:bg-white/10 text-[9px] font-mono text-white/60 border border-white/5 transition-colors"
+                                >
+                                  Copiar
+                                </button>
+                              </div>
+                            </div>
+
+                            <div className="flex flex-col items-end">
+                              <span className="text-[9px] font-mono font-bold text-white/40 uppercase">CONECTADOS:</span>
+                              <span className="text-xs font-bold text-white mt-0.5 flex items-center gap-1">
+                                <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+                                {coWatchRoom.participants.length} / 4
+                              </span>
+                            </div>
+                          </div>
+
+                          {/* List of participants */}
+                          <div className="flex flex-wrap gap-1.5">
+                            {coWatchRoom.participants.map((p: any) => {
+                              const isStale = Date.now() - p.lastActive > 12000;
+                              return (
+                                <span
+                                  key={p.username}
+                                  className={`px-2 py-0.5 rounded-full text-[9px] font-mono font-bold border ${
+                                    isStale
+                                      ? 'bg-zinc-900/40 border-white/5 text-white/30'
+                                      : 'bg-violet-950/40 border-violet-500/20 text-violet-300'
+                                  }`}
+                                >
+                                  @{p.username} {isStale ? '(ausente)' : '(activo)'}
+                                </span>
+                              );
+                            })}
+                          </div>
+
+                          {/* Live WebRTC microphone control bar */}
+                          <div className="p-3 rounded-lg bg-black/40 border border-white/5 flex items-center justify-between mt-1">
+                            <div className="flex items-center gap-2">
+                              {coWatchVoiceState === 'connected' && (
+                                <div className="flex items-center gap-1.5">
+                                  <div className="relative flex h-2 w-2">
+                                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                                    <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+                                  </div>
+                                  <span className="text-[10px] font-bold font-mono text-emerald-400">VOZ: EN LÍNEA</span>
+                                </div>
+                              )}
+                              {coWatchVoiceState === 'connecting' && (
+                                <div className="flex items-center gap-1.5">
+                                  <RefreshCw className="w-3.5 h-3.5 text-yellow-400 animate-spin" />
+                                  <span className="text-[10px] font-bold font-mono text-yellow-400">VOZ: CONECTANDO...</span>
+                                </div>
+                              )}
+                              {coWatchVoiceState === 'muted' && (
+                                <div className="flex items-center gap-1.5">
+                                  <MicOff className="w-3.5 h-3.5 text-red-400" />
+                                  <span className="text-[10px] font-bold font-mono text-red-400">VOZ: SILENCIADO</span>
+                                </div>
+                              )}
+                              {coWatchVoiceState === 'disconnected' && (
+                                <div className="flex items-center gap-1.5">
+                                  <Phone className="w-3.5 h-3.5 text-white/30" />
+                                  <span className="text-[10px] font-bold font-mono text-white/30">VOZ: DESCONECTADO</span>
+                                </div>
+                              )}
+                              {coWatchVoiceState === 'error' && (
+                                <div className="flex items-center gap-1.5">
+                                  <span className="text-[10px] font-bold font-mono text-red-500">VOZ: SIN PERMISO ⚠️</span>
+                                </div>
+                              )}
+                            </div>
+
+                            <div className="flex gap-1.5">
+                              {/* Voice toggle power button */}
+                              <button
+                                type="button"
+                                onClick={handleToggleVoiceConnection}
+                                className={`p-1.5 rounded-lg border transition-colors ${
+                                  coWatchVoiceState !== 'disconnected'
+                                    ? 'bg-red-600/20 border-red-500/30 text-red-400 hover:bg-red-600/30'
+                                    : 'bg-emerald-600/20 border-emerald-500/30 text-emerald-400 hover:bg-emerald-600/30'
+                                }`}
+                                title={coWatchVoiceState !== 'disconnected' ? "Desconectar llamada" : "Conectar llamada de voz"}
+                              >
+                                {coWatchVoiceState !== 'disconnected' ? <PhoneOff className="w-3.5 h-3.5" /> : <Phone className="w-3.5 h-3.5" />}
+                              </button>
+
+                              {/* Mic Mute Button */}
+                              {coWatchVoiceState !== 'disconnected' && (
+                                <button
+                                  type="button"
+                                  onClick={handleToggleMic}
+                                  className={`p-1.5 rounded-lg border transition-colors ${
+                                    coWatchMicMuted
+                                      ? 'bg-red-600/20 border-red-500/30 text-red-400 hover:bg-red-600/30'
+                                      : 'bg-zinc-800 border-white/10 text-white/80 hover:bg-zinc-700'
+                                  }`}
+                                >
+                                  {coWatchMicMuted ? <MicOff className="w-3.5 h-3.5" /> : <Mic className="w-3.5 h-3.5" />}
+                                </button>
+                              )}
+                            </div>
+                          </div>
+
+                          {/* Video player active sync state badge */}
+                          {coWatchRoom.videoState && coWatchRoom.videoState.url && (
+                            <div className="p-2.5 rounded-lg bg-[#0E0F12] border border-white/5 flex flex-col gap-0.5">
+                              <span className="text-[8px] font-mono font-bold text-violet-400 uppercase tracking-widest">Vídeo en Co-reproducción</span>
+                              <span className="text-xs font-bold text-white truncate max-w-full">{coWatchRoom.videoState.title}</span>
+                              <div className="flex items-center justify-between text-[9px] font-mono text-white/40 mt-1">
+                                <span>Estado: {coWatchRoom.videoState.playing ? 'Reproduciendo ▶️' : 'Pausado ⏸️'}</span>
+                                <span>Sincro: @{coWatchRoom.videoState.sender}</span>
+                              </div>
+                            </div>
+                          )}
+
+                        </div>
+
+                        {/* ROOM SPECIFIC CHAT STREAM */}
+                        <div className={`rounded-xl border flex flex-col overflow-hidden h-[300px] ${tc('bg-[#040405] border-white/10 text-white', 'bg-white border-slate-200 text-slate-800')}`}>
+                          <div className="px-3.5 py-2 bg-black/40 border-b border-white/5 flex items-center justify-between">
+                            <span className="text-[10px] font-bold font-mono text-violet-400 uppercase">Chat de la Sala Privada</span>
+                            <span className="text-[8px] font-mono text-emerald-400 uppercase tracking-widest">Encriptado por sala</span>
+                          </div>
+
+                          <div className="flex-1 p-3 overflow-y-auto space-y-2.5 font-sans text-xs flex flex-col">
+                            {coWatchRoom.messages.length === 0 ? (
+                              <div className="text-white/30 text-center py-20 font-mono uppercase tracking-widest text-[9px]">No hay mensajes en esta sala privada</div>
+                            ) : (
+                              coWatchRoom.messages.map((msg: any) => {
+                                const isMe = msg.sender.toLowerCase() === (coWatchNickname || '').toLowerCase();
+                                const isSystem = msg.isSystem;
+
+                                if (isSystem) {
+                                  return (
+                                    <div key={msg.id} className="text-center py-1 text-white/30 font-mono text-[9px] italic">
+                                      {msg.text}
+                                    </div>
+                                  );
+                                }
+
+                                return (
+                                  <div
+                                    key={msg.id}
+                                    className={`max-w-[85%] rounded-2xl p-2.5 leading-relaxed flex flex-col ${
+                                      isMe
+                                        ? 'self-end bg-violet-600 text-white rounded-br-none'
+                                        : tc('self-start bg-zinc-800/80 text-white rounded-bl-none border border-white/5', 'self-start bg-slate-100 text-slate-800 rounded-bl-none border border-slate-200')
+                                    }`}
+                                  >
+                                    <span className={`text-[8px] font-bold uppercase mb-0.5 ${isMe ? 'text-violet-200' : 'text-violet-400'}`}>
+                                      {msg.sender}
+                                    </span>
+                                    <p className="whitespace-pre-wrap">{msg.text}</p>
+                                    <span className={`text-[8px] mt-1 text-right block ${isMe ? 'text-white/40' : 'text-slate-400'}`}>{msg.timestamp}</span>
+                                  </div>
+                                );
+                              })
+                            )}
+                          </div>
+
+                          <form onSubmit={handleSendRoomChatMessage} className="p-2 border-t border-white/5 bg-black/20 flex gap-2">
+                            <input
+                              type="text"
+                              placeholder="Escribe un mensaje privado para la sala..."
+                              value={coWatchChatMsg}
+                              onChange={(e) => setCoWatchChatMsg(e.target.value)}
+                              className={`flex-1 border rounded-lg px-3 py-1.5 text-xs focus:outline-none focus:border-violet-500 font-mono ${
+                                tc('bg-black/50 border-white/10 text-white placeholder-white/30', 'bg-white border-slate-200 text-slate-800 placeholder-slate-400')
+                              }`}
+                            />
+                            <button
+                              type="submit"
+                              disabled={!coWatchChatMsg.trim()}
+                              className="px-3 py-1.5 bg-violet-600 hover:bg-violet-500 disabled:bg-zinc-700/50 disabled:text-zinc-500 text-white rounded-lg transition-colors flex items-center justify-center"
+                            >
+                              <Send className="w-3.5 h-3.5" />
+                            </button>
+                          </form>
+                        </div>
+
+                        {/* Room disconnect action */}
+                        <button
+                          type="button"
+                          onClick={handleLeaveCoWatchRoom}
+                          className="w-full py-2 bg-red-600/10 hover:bg-red-600/20 text-red-400 border border-red-500/20 text-xs font-bold uppercase tracking-wider rounded-lg transition-all flex items-center justify-center gap-2 mt-1"
+                        >
+                          <PhoneOff className="w-3.5 h-3.5" />
+                          Salir de la Sala Privada
+                        </button>
+
+                      </div>
+                    )}
+
                   </div>
                 )}
               </div>
