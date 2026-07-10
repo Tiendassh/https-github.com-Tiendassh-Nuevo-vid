@@ -222,8 +222,8 @@ export default function Home() {
   const [commentSort, setCommentSort] = useState<'rating' | 'newest'>('rating');
   const [commentSearch, setCommentSearch] = useState('');
 
-  // Tab state (Sidebar) - 'videos' | 'nginx' | 'quest' | 'bot'
-  const [activeSidebarTab, setActiveSidebarTab] = useState<'videos' | 'nginx' | 'quest' | 'bot'>('videos');
+  // Tab state (Sidebar) - 'videos' | 'telegram' | 'social' | 'nginx' | 'quest'
+  const [activeSidebarTab, setActiveSidebarTab] = useState<'videos' | 'telegram' | 'social' | 'nginx' | 'quest'>('videos');
   const [activeGuideTab, setActiveGuideTab] = useState<'render-standard' | 'render-docker' | 'vps'>('render-standard');
 
   // Server Sync and Logs State
@@ -316,6 +316,20 @@ export default function Home() {
   const [telegramUrl, setTelegramUrl] = useState('http://t.me/Start_vidroxbot');
   const [isEditingTelegram, setIsEditingTelegram] = useState(false);
   const [tempTelegramUrl, setTempTelegramUrl] = useState('http://t.me/Start_vidroxbot');
+
+  // Telegram Feed, Chat & Inbox Live States
+  const [telegramFeed, setTelegramFeed] = useState<any[]>([]);
+  const [chatMessages, setChatMessages] = useState<any[]>([]);
+  const [inboxMessages, setInboxMessages] = useState<any[]>([]);
+  const [newTelegramPostText, setNewTelegramPostText] = useState('');
+  const [newLiveChatMessageText, setNewLiveChatMessageText] = useState('');
+  const [newInboxMessageText, setNewInboxMessageText] = useState('');
+  const [activeInboxRecipient, setActiveInboxRecipient] = useState<string>('invitado');
+  const [autoplayEnabled, setAutoplayEnabled] = useState(true);
+  const autoplayRef = useRef(true);
+  useEffect(() => {
+    autoplayRef.current = autoplayEnabled;
+  }, [autoplayEnabled]);
 
   // Load state from LocalStorage on mount
   useEffect(() => {
@@ -478,6 +492,11 @@ export default function Home() {
                   setIsPlaying(true);
                 } else if (state === 2) { // 2 is paused
                   setIsPlaying(false);
+                } else if (state === 0) { // 0 is ended
+                  if (autoplayRef.current) {
+                    const btnNext = document.getElementById('btn-next-video');
+                    if (btnNext) btnNext.click();
+                  }
                 }
               }
             }
@@ -581,6 +600,20 @@ export default function Home() {
         setNodeVersion(data.nodeVersion || '');
         setHasTelegramToken(!!data.hasTelegramToken);
 
+        // Sync new live collections
+        if (data.telegramUrl) {
+          setTelegramUrl(data.telegramUrl);
+        }
+        if (Array.isArray(data.telegramFeed)) {
+          setTelegramFeed(data.telegramFeed);
+        }
+        if (Array.isArray(data.chatMessages)) {
+          setChatMessages(data.chatMessages);
+        }
+        if (Array.isArray(data.inboxMessages)) {
+          setInboxMessages(data.inboxMessages);
+        }
+
         // If there are videos in the server database, let's merge them into our videos list!
         if (Array.isArray(data.videos) && data.videos.length > 0) {
           setVideos(prev => {
@@ -618,85 +651,111 @@ export default function Home() {
     return () => clearInterval(interval);
   }, [mounted, syncWithServer]);
 
-  // Handle simulated Telegram messages
-  const handleSimulateTelegramMessage = async (e: React.FormEvent) => {
+  // Handle Telegram feed postings
+  const handleAddTelegramPost = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!simulatedInput.trim() || isSimulatingMessage) return;
-
-    const userMsg = simulatedInput.trim();
-    const timestamp = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    const msgId = 'msg-sim-' + Date.now();
-
-    setSimulatedChat(prev => [...prev, {
-      id: msgId,
-      sender: 'user',
-      text: userMsg,
-      timestamp
-    }]);
-
-    setSimulatedInput('');
-    setIsSimulatingMessage(true);
+    if (!newTelegramPostText.trim()) return;
 
     try {
-      const response = await fetch('/api/telegram', {
+      const response = await fetch('/api/videos', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          update_id: Math.floor(Math.random() * 1000000),
-          message: {
-            message_id: Math.floor(Math.random() * 1000),
-            from: {
-              id: 99999,
-              first_name: currentUser ? currentUser.username : (authorName || 'Invitado_Nocturno'),
-              username: currentUser ? currentUser.username.toLowerCase() : 'invitado_nocturno'
-            },
-            chat: {
-              id: 12345678,
-              type: 'private'
-            },
-            text: userMsg
-          }
+          action: 'addTelegramPost',
+          senderName: currentUser ? currentUser.username : (authorName || 'Explorador Anónimo'),
+          senderUsername: currentUser ? currentUser.username.toLowerCase() : 'anon_nox',
+          text: newTelegramPostText.trim()
         })
       });
-
-      let botResponseText = '🤖 [SYS_ERR] No se recibió respuesta del bot.';
-      
       if (response.ok) {
-        const contentType = response.headers.get("content-type");
-        if (contentType && contentType.includes("application/json")) {
-          const data = await response.json();
-          if (data && data.text) {
-            botResponseText = data.text;
-          } else if (data && data.error) {
-            botResponseText = `❌ [SYS_ERR] Error: ${data.error}`;
-          }
-        } else {
-          botResponseText = `⚠️ [SYS_WARN] El servidor respondió pero no devolvió JSON válido.`;
-        }
-      } else {
-        botResponseText = `❌ [SYS_ERR] Error del servidor (Código ${response.status}).`;
+        setNewTelegramPostText('');
+        syncWithServer();
+        awardPoints(15, 'Publicación compartida en el feed de Telegram');
       }
+    } catch (err) {
+      console.error('Error posting to telegram feed:', err);
+    }
+  };
 
-      setSimulatedChat(prev => [...prev, {
-        id: 'msg-bot-' + Date.now(),
-        sender: 'bot',
-        text: botResponseText,
-        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-      }]);
+  // Handle live community chat messages
+  const handleSendLiveChatMessage = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newLiveChatMessageText.trim()) return;
 
-      syncWithServer();
-      awardPoints(15, 'Simulación de bot ejecutada con éxito');
+    const senderName = currentUser ? currentUser.username : (authorName || 'Invitado_Nocturno');
+    const avatarColors = ['bg-indigo-500', 'bg-rose-500', 'bg-emerald-500', 'bg-amber-500', 'bg-violet-500', 'bg-cyan-500', 'bg-pink-500'];
+    const hash = senderName.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0);
+    const color = avatarColors[hash % avatarColors.length];
 
-    } catch (error: any) {
-      console.error('Error simulating Telegram webhook:', error);
-      setSimulatedChat(prev => [...prev, {
-        id: 'msg-err-' + Date.now(),
-        sender: 'bot',
-        text: `❌ [CON_ERR] Falló el enlace con el servidor: ${error.message || 'Error de red'}`,
-        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-      }]);
-    } finally {
-      setIsSimulatingMessage(false);
+    try {
+      const response = await fetch('/api/videos', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'addChatMessage',
+          sender: senderName,
+          text: newLiveChatMessageText.trim(),
+          avatarColor: color
+        })
+      });
+      if (response.ok) {
+        setNewLiveChatMessageText('');
+        syncWithServer();
+        awardPoints(5, 'Mensaje enviado al chat en vivo');
+      }
+    } catch (err) {
+      console.error('Error sending chat message:', err);
+    }
+  };
+
+  // Handle direct user inbox messages
+  const handleSendInboxMessage = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newInboxMessageText.trim() || !activeInboxRecipient) return;
+
+    const senderName = currentUser ? currentUser.username : 'invitado';
+
+    try {
+      const response = await fetch('/api/videos', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'addInboxMessage',
+          sender: senderName,
+          recipient: activeInboxRecipient,
+          text: newInboxMessageText.trim()
+        })
+      });
+      if (response.ok) {
+        setNewInboxMessageText('');
+        syncWithServer();
+        awardPoints(10, 'Mensaje directo enviado exitosamente');
+
+        // To make the inbox highly interactive and fun, let's trigger an automatic simulated response after 2 seconds!
+        setTimeout(async () => {
+          const replies = [
+            `¡Hola! Recibí tu mensaje. Qué buen gusto musical tienes. El video que estamos viendo está espectacular. 🎵`,
+            `¡Saludos! Me encanta este canal de videos nocturnos, las vibras de ASMR y Chill son fantásticas.`,
+            `Hola, ¿cómo va todo? Gracias por escribirme por privado. Sigamos disfrutando de la transmisión continua. ✨`,
+            `¡Excelente mensaje! Acabo de añadir un nuevo video a la cola de reproducción. ¡Cuéntame qué te parece!`
+          ];
+          const randomReply = replies[Math.floor(Math.random() * replies.length)];
+
+          await fetch('/api/videos', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              action: 'addInboxMessage',
+              sender: activeInboxRecipient,
+              recipient: senderName,
+              text: randomReply
+            })
+          });
+          syncWithServer();
+        }, 2000);
+      }
+    } catch (err) {
+      console.error('Error sending direct message:', err);
     }
   };
 
@@ -1801,9 +1860,9 @@ services:
             
             <div className={`relative z-10 w-full rounded-2xl overflow-hidden bg-black border flex flex-col justify-between shadow-2xl transition-all duration-500 ${
               playerHeight === 'tall' 
-                ? 'h-[440px] sm:h-[520px]' 
+                ? 'h-[280px] xs:h-[360px] sm:h-[520px]' 
                 : playerHeight === 'cinema' 
-                  ? 'h-[550px] sm:h-[650px]' 
+                  ? 'h-[320px] xs:h-[420px] sm:h-[650px]' 
                   : 'aspect-video'
             } ${tc('border-white/10', 'border-slate-300')}`}>
               {activeVideo ? (
@@ -1813,6 +1872,12 @@ services:
                     src={activeVideo.url}
                     controls
                     autoPlay
+                    onEnded={() => {
+                      if (autoplayRef.current) {
+                        const btnNext = document.getElementById('btn-next-video');
+                        if (btnNext) btnNext.click();
+                      }
+                    }}
                     className="w-full h-full object-contain"
                     style={{ background: 'black' }}
                   />
@@ -1932,7 +1997,7 @@ services:
                   </button>
 
                   <button
-                    id="btn-skip-next"
+                    id="btn-next-video"
                     onClick={handleNextVideo}
                     className={`p-2 rounded-lg border transition-all ${
                       tc('bg-white/5 border-white/10 hover:bg-white/10 text-white/80 hover:text-white', 'bg-slate-100 border-slate-200 hover:bg-slate-200 text-slate-700 hover:text-slate-900')
@@ -2338,10 +2403,10 @@ services:
           <div className="lg:col-span-4 flex flex-col gap-6">
             
             {/* TABS SWITCHER */}
-            <div className={`p-1.5 rounded-xl border flex items-center gap-1.5 ${tc('bg-[#0A0A0B] border-white/10', 'bg-white border-slate-200')}`}>
+            <div className={`p-1.5 rounded-xl border flex items-center gap-1.5 overflow-x-auto scrollbar-none flex-nowrap w-full ${tc('bg-[#0A0A0B] border-white/10', 'bg-white border-slate-200')}`}>
               <button
                 onClick={() => setActiveSidebarTab('videos')}
-                className={`flex-1 flex items-center justify-center gap-2 py-2 rounded text-xs font-semibold tracking-tight transition-all ${
+                className={`flex-shrink-0 flex items-center justify-center gap-1.5 px-3 py-2 rounded text-xs font-semibold tracking-tight transition-all ${
                   activeSidebarTab === 'videos'
                     ? tc('bg-blue-600/15 text-blue-400 border border-blue-500/25', 'bg-blue-50 text-blue-600 border border-blue-200')
                     : tc('text-white/60 hover:text-white border border-transparent', 'text-slate-500 hover:text-slate-800 border border-transparent')
@@ -2350,11 +2415,43 @@ services:
                 <Compass className="w-3.5 h-3.5" />
                 <span>Explorar</span>
               </button>
+
+              <button
+                id="btn-tab-telegram"
+                onClick={() => {
+                  setActiveSidebarTab('telegram');
+                  awardPoints(5, 'Sección Feed de Telegram abierta');
+                }}
+                className={`flex-shrink-0 flex items-center justify-center gap-1.5 px-3 py-2 rounded text-xs font-semibold tracking-tight transition-all ${
+                  activeSidebarTab === 'telegram'
+                    ? tc('bg-sky-500/15 text-sky-400 border border-sky-500/25', 'bg-sky-50 text-sky-600 border border-sky-200')
+                    : tc('text-white/60 hover:text-white border border-transparent', 'text-slate-500 hover:text-slate-800 border border-transparent')
+                }`}
+              >
+                <Send className="w-3.5 h-3.5 rotate-45" />
+                <span>Telegram Feed</span>
+              </button>
+
+              <button
+                id="btn-tab-social"
+                onClick={() => {
+                  setActiveSidebarTab('social');
+                  awardPoints(5, 'Sección Social Chat e Inbox abierta');
+                }}
+                className={`flex-shrink-0 flex items-center justify-center gap-1.5 px-3 py-2 rounded text-xs font-semibold tracking-tight transition-all ${
+                  activeSidebarTab === 'social'
+                    ? tc('bg-violet-500/15 text-violet-400 border border-violet-500/25', 'bg-violet-50 text-violet-600 border border-violet-200')
+                    : tc('text-white/60 hover:text-white border border-transparent', 'text-slate-500 hover:text-slate-800 border border-transparent')
+                }`}
+              >
+                <MessageSquare className="w-3.5 h-3.5" />
+                <span>Social Chat ({chatMessages.length})</span>
+              </button>
               
               <button
                 id="btn-tab-nginx"
                 onClick={() => setActiveSidebarTab('nginx')}
-                className={`flex-1 flex items-center justify-center gap-2 py-2 rounded text-xs font-semibold tracking-tight transition-all ${
+                className={`flex-shrink-0 flex items-center justify-center gap-1.5 px-3 py-2 rounded text-xs font-semibold tracking-tight transition-all ${
                   activeSidebarTab === 'nginx'
                     ? tc('bg-blue-600/15 text-blue-400 border border-blue-500/25', 'bg-blue-50 text-blue-600 border border-blue-200')
                     : tc('text-white/60 hover:text-white border border-transparent', 'text-slate-500 hover:text-slate-800 border border-transparent')
@@ -2367,7 +2464,7 @@ services:
               <button
                 id="btn-tab-quest"
                 onClick={() => setActiveSidebarTab('quest')}
-                className={`flex-1 flex items-center justify-center gap-2 py-2 rounded text-xs font-semibold tracking-tight transition-all ${
+                className={`flex-shrink-0 flex items-center justify-center gap-1.5 px-3 py-2 rounded text-xs font-semibold tracking-tight transition-all ${
                   activeSidebarTab === 'quest'
                     ? tc('bg-yellow-500/15 text-yellow-400 border border-yellow-500/25', 'bg-amber-100 text-amber-800 border border-amber-200')
                     : tc('text-white/60 hover:text-white border border-transparent', 'text-slate-500 hover:text-slate-800 border border-transparent')
@@ -2375,19 +2472,6 @@ services:
               >
                 <Gamepad2 className="w-3.5 h-3.5" />
                 <span>Quest 🎮</span>
-              </button>
-
-              <button
-                id="btn-tab-bot"
-                onClick={() => setActiveSidebarTab('bot')}
-                className={`flex-1 flex items-center justify-center gap-2 py-2 rounded text-xs font-semibold tracking-tight transition-all ${
-                  activeSidebarTab === 'bot'
-                    ? tc('bg-cyan-500/15 text-cyan-400 border border-cyan-500/25', 'bg-cyan-100 text-cyan-800 border border-cyan-200')
-                    : tc('text-white/60 hover:text-white border border-transparent', 'text-slate-500 hover:text-slate-800 border border-transparent')
-                }`}
-              >
-                <Bot className="w-3.5 h-3.5" />
-                <span>Bot Control 🤖</span>
               </button>
             </div>
 
@@ -2405,6 +2489,50 @@ services:
                     <Plus className="w-3.5 h-3.5" />
                     <span>Añadir Video</span>
                   </button>
+                </div>
+
+                {/* PLAYLIST AUTOPLAY STATUS DECK */}
+                <div className={`p-3 rounded-xl border flex flex-col gap-2 transition-all ${tc('bg-[#0A0A0B]/60 border-white/5', 'bg-slate-50 border-slate-200')}`}>
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <div className={`w-2.5 h-2.5 rounded-full ${autoplayEnabled ? 'bg-emerald-500 animate-pulse' : 'bg-rose-500'}`} />
+                      <span className={`text-[11px] font-bold tracking-tight ${tc('text-white/80', 'text-slate-800')}`}>
+                        Reproducción Automática {autoplayEnabled ? 'Activada' : 'Pausada'}
+                      </span>
+                    </div>
+                    
+                    {/* IOS-style toggle */}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setAutoplayEnabled(!autoplayEnabled);
+                        awardPoints(5, `Autoplay de playlist ${!autoplayEnabled ? 'activado' : 'desactivado'}`);
+                      }}
+                      className={`relative inline-flex h-5 w-10 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
+                        autoplayEnabled ? 'bg-emerald-500' : tc('bg-zinc-800', 'bg-slate-300')
+                      }`}
+                    >
+                      <span
+                        className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${
+                          autoplayEnabled ? 'translate-x-5' : 'translate-x-0'
+                        }`}
+                      />
+                    </button>
+                  </div>
+                  
+                  {/* Next up preview */}
+                  {videos.length > 0 && (
+                    <div className="flex items-center justify-between gap-2 border-t border-white/5 pt-2 text-[10px] font-mono">
+                      <span className={tc('text-white/40', 'text-slate-500')}>SIGUIENTE:</span>
+                      <span className={`truncate font-semibold max-w-[200px] ${tc('text-blue-400', 'text-blue-600')}`}>
+                        {(() => {
+                          const currentIndex = videos.findIndex(v => v.id === activeVideo?.id);
+                          const nextIndex = (currentIndex + 1) % videos.length;
+                          return videos[nextIndex]?.title || 'Ninguno';
+                        })()}
+                      </span>
+                    </div>
+                  )}
                 </div>
 
                 {/* ADD CUSTOM VIDEO FORM */}
@@ -3064,42 +3192,336 @@ services:
               </div>
             )}
 
+            {/* TAB CONTENT: TELEGRAM GROUP FEED */}
+            {activeSidebarTab === 'telegram' && (
+              <div className="flex flex-col gap-4 animate-in fade-in slide-in-from-bottom-3 duration-300">
+                {/* Group Association card */}
+                <div className={`p-4 rounded-xl border flex flex-col gap-3 transition-all ${
+                  tc('bg-gradient-to-br from-sky-500/10 to-[#0A0A0B] border-sky-500/20 text-sky-400', 'bg-gradient-to-br from-sky-50 to-white border-sky-200 text-sky-800')
+                }`}>
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <Send className="w-5 h-5 text-sky-400 rotate-45" />
+                      <h4 className="font-bold text-xs uppercase tracking-wider font-mono">Grupo de Telegram Asociado</h4>
+                    </div>
+                    <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-sky-500/15 text-sky-400 border border-sky-500/20 uppercase">Activo 🌐</span>
+                  </div>
+                  
+                  <p className={`text-xs leading-relaxed ${tc('text-white/60', 'text-slate-600')}`}>
+                    Este canal de feed está enlazado a la comunidad del grupo de Telegram. Cualquier usuario puede publicar novedades, ver la actividad reciente y reaccionar a los posts.
+                  </p>
+
+                  <div className="flex items-center gap-2 bg-black/20 p-2.5 rounded-lg border border-white/5">
+                    <span className="text-[10px] font-mono text-white/40">URL GRUPO:</span>
+                    <a 
+                      href={telegramUrl} 
+                      target="_blank" 
+                      rel="noopener noreferrer" 
+                      className="text-xs font-mono text-sky-400 hover:underline truncate flex-1 font-bold"
+                    >
+                      {telegramUrl}
+                    </a>
+                  </div>
+                </div>
+
+                {/* PUBLISH FEED UPDATE */}
+                <form onSubmit={handleAddTelegramPost} className={`p-4 rounded-xl border flex flex-col gap-3 ${tc('bg-[#0A0A0B] border-white/5', 'bg-white border-slate-200')}`}>
+                  <h4 className={`text-xs font-bold flex items-center gap-2 ${tc('text-white', 'text-slate-800')}`}>
+                    <Plus className="w-4 h-4 text-sky-400" />
+                    <span>Publicar en el Feed de Telegram</span>
+                  </h4>
+                  <textarea
+                    placeholder="Escribe una novedad o comparte un enlace interesante para la comunidad..."
+                    value={newTelegramPostText}
+                    onChange={(e) => setNewTelegramPostText(e.target.value)}
+                    rows={3}
+                    className={`w-full border rounded-lg p-2.5 text-xs focus:outline-none focus:border-sky-500 resize-none ${
+                      tc('bg-[#050506] border-white/10 text-white placeholder-white/30', 'bg-slate-50 border-slate-200 text-slate-800 placeholder-slate-400')
+                    }`}
+                  />
+                  <div className="flex justify-end">
+                    <button
+                      type="submit"
+                      disabled={!newTelegramPostText.trim()}
+                      className="bg-sky-500 hover:bg-sky-600 disabled:bg-zinc-800 disabled:text-zinc-500 text-white font-bold text-xs px-4 py-2 rounded-lg transition-all shadow flex items-center gap-1.5"
+                    >
+                      <Send className="w-3.5 h-3.5 rotate-45" />
+                      <span>Publicar</span>
+                    </button>
+                  </div>
+                </form>
+
+                {/* FEED POSTS */}
+                <div className="space-y-3.5">
+                  <div className="flex items-center justify-between">
+                    <span className={`text-[10px] font-mono uppercase tracking-widest ${tc('text-white/40', 'text-slate-500')}`}>Mensajes del Feed ({telegramFeed.length})</span>
+                  </div>
+                  
+                  {telegramFeed.length === 0 ? (
+                    <div className={`text-center py-12 rounded-xl border border-dashed ${tc('bg-[#050506]/30 border-white/10 text-white/40', 'bg-slate-50 border-slate-200 text-slate-400')}`}>
+                      <Send className="w-8 h-8 mx-auto mb-2 opacity-40 rotate-45 text-sky-500" />
+                      <p className="text-xs font-mono uppercase tracking-widest">AÚN NO HAY PUBLICACIONES EN EL FEED</p>
+                    </div>
+                  ) : (
+                    telegramFeed.map((post) => (
+                      <div
+                        key={post.id}
+                        className={`p-4 rounded-xl border flex flex-col gap-2.5 transition-all hover:scale-[1.01] ${
+                          tc('bg-[#0A0A0B] border-white/5', 'bg-white border-slate-200 shadow-sm')
+                        }`}
+                      >
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-2">
+                            <div className="w-8 h-8 rounded-full bg-gradient-to-tr from-sky-500 to-indigo-600 text-white flex items-center justify-center font-bold text-xs shadow">
+                              {post.senderName.charAt(0).toUpperCase()}
+                            </div>
+                            <div>
+                              <h5 className={`text-xs font-bold ${tc('text-white', 'text-slate-800')}`}>{post.senderName}</h5>
+                              <span className="text-[10px] text-sky-400 font-mono">@{post.senderUsername}</span>
+                            </div>
+                          </div>
+                          <span className={`text-[9px] font-mono ${tc('text-white/30', 'text-slate-400')}`}>{post.timestamp}</span>
+                        </div>
+                        
+                        <p className={`text-xs leading-relaxed ${tc('text-white/80', 'text-slate-600')}`}>
+                          {post.text}
+                        </p>
+                        
+                        {/* Likes counter reaction */}
+                        <div className="flex items-center justify-between border-t border-white/5 pt-2 mt-1">
+                          <span className="text-[9px] font-mono text-white/30">ID: {post.id}</span>
+                          <button
+                            type="button"
+                            onClick={async () => {
+                              awardPoints(10, 'Reacción a post de Telegram');
+                            }}
+                            className={`flex items-center gap-1.5 text-[10px] px-2.5 py-1 rounded-full border transition-all ${
+                              tc('bg-white/5 border-white/10 hover:bg-rose-500/15 hover:text-rose-400 hover:border-rose-500/20 text-white/60', 'bg-slate-100 border-slate-200 hover:bg-rose-50 hover:text-rose-600 hover:border-rose-200 text-slate-600')
+                            }`}
+                          >
+                            <ThumbsUp className="w-3 h-3 text-rose-500 fill-rose-500" />
+                            <span className="font-bold">Me gusta</span>
+                          </button>
+                        </div>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* TAB CONTENT: SOCIAL HUB (CHAT & INBOX) */}
+            {activeSidebarTab === 'social' && (
+              <div className="flex flex-col gap-4 animate-in fade-in slide-in-from-bottom-3 duration-300">
+                
+                {/* SUB-TABS SELECTOR */}
+                <div className={`p-1 rounded-lg border flex gap-1 ${tc('bg-[#0A0A0B]/60 border-white/5', 'bg-slate-100 border-slate-200')}`}>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setActiveInboxRecipient('invitado'); // Reset to default DM or general
+                    }}
+                    className={`flex-1 text-center py-1.5 rounded text-[11px] font-bold uppercase tracking-wider font-mono transition-all ${
+                      activeInboxRecipient === 'invitado'
+                        ? 'bg-violet-600 text-white shadow'
+                        : tc('text-white/40 hover:text-white', 'text-slate-500 hover:text-slate-800')
+                    }`}
+                  >
+                    Chat en Vivo 💬
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setActiveInboxRecipient('Admin_Nocturno'); // Toggle to DM
+                    }}
+                    className={`flex-1 text-center py-1.5 rounded text-[11px] font-bold uppercase tracking-wider font-mono transition-all ${
+                      activeInboxRecipient !== 'invitado'
+                        ? 'bg-violet-600 text-white shadow'
+                        : tc('text-white/40 hover:text-white', 'text-slate-500 hover:text-slate-800')
+                    }`}
+                  >
+                    Bandeja Inbox 📥
+                  </button>
+                </div>
+
+                {/* RENDER CHAT ROOM */}
+                {activeInboxRecipient === 'invitado' ? (
+                  <div className="flex flex-col gap-3">
+                    <div className={`p-4 rounded-xl border flex flex-col gap-2 transition-all ${
+                      tc('bg-gradient-to-br from-violet-500/10 to-[#0A0A0B] border-violet-500/20 text-violet-400', 'bg-gradient-to-br from-violet-50 to-white border-violet-200 text-violet-800')
+                    }`}>
+                      <h4 className="font-bold text-xs uppercase tracking-wider font-mono">Chat Grupal de la Comunidad</h4>
+                      <p className={`text-xs leading-relaxed ${tc('text-white/60', 'text-slate-600')}`}>
+                        Comparte impresiones, debate con otros noctámbulos en tiempo real y disfruta de las listas de reproducción.
+                      </p>
+                    </div>
+
+                    {/* Chat Log container */}
+                    <div className={`rounded-xl border flex flex-col overflow-hidden h-[340px] ${tc('bg-[#040405] border-white/10 text-white', 'bg-white border-slate-200 text-slate-800')}`}>
+                      <div className="px-3.5 py-2 bg-black/40 border-b border-white/5 flex items-center justify-between">
+                        <span className="text-[10px] font-bold font-mono text-white/50">SALA GENERAL LIVES</span>
+                        <div className="flex items-center gap-1">
+                          <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+                          <span className="text-[8px] font-mono text-emerald-400 uppercase tracking-widest">Activo</span>
+                        </div>
+                      </div>
+
+                      <div className="flex-1 p-3 overflow-y-auto space-y-2.5 font-sans text-xs flex flex-col">
+                        {chatMessages.length === 0 ? (
+                          <div className="text-white/30 text-center py-20 font-mono uppercase tracking-widest text-[10px]">Aún no hay mensajes en el chat</div>
+                        ) : (
+                          chatMessages.map((msg) => {
+                            const isMe = msg.sender === (currentUser ? currentUser.username : (authorName || 'Invitado_Nocturno'));
+                            return (
+                              <div
+                                key={msg.id}
+                                className={`max-w-[85%] rounded-2xl p-2.5 leading-relaxed flex flex-col ${
+                                  isMe
+                                    ? 'self-end bg-violet-600 text-white rounded-br-none'
+                                    : tc('self-start bg-zinc-800/80 text-white rounded-bl-none border border-white/5', 'self-start bg-slate-100 text-slate-800 rounded-bl-none border border-slate-200')
+                                }`}
+                              >
+                                <span className={`text-[8px] font-bold uppercase mb-0.5 ${isMe ? 'text-violet-200' : 'text-violet-400'}`}>
+                                  {msg.sender}
+                                </span>
+                                <p className="whitespace-pre-wrap">{msg.text}</p>
+                                <span className={`text-[8px] mt-1 text-right block ${isMe ? 'text-white/40' : 'text-slate-400'}`}>{msg.timestamp}</span>
+                              </div>
+                            );
+                          })
+                        )}
+                      </div>
+
+                      <form onSubmit={handleSendLiveChatMessage} className="p-2 border-t border-white/5 bg-black/20 flex gap-2">
+                        <input
+                          type="text"
+                          placeholder="Escribe un mensaje en el chat vivo..."
+                          value={newLiveChatMessageText}
+                          onChange={(e) => setNewLiveChatMessageText(e.target.value)}
+                          className={`flex-1 border rounded-lg px-3 py-1.5 text-xs focus:outline-none focus:border-violet-500 font-mono ${
+                            tc('bg-black/50 border-white/10 text-white placeholder-white/30', 'bg-white border-slate-200 text-slate-800 placeholder-slate-400')
+                          }`}
+                        />
+                        <button
+                          type="submit"
+                          disabled={!newLiveChatMessageText.trim()}
+                          className="px-3 py-1.5 bg-violet-600 hover:bg-violet-500 disabled:bg-zinc-700/50 disabled:text-zinc-500 text-white rounded-lg transition-colors flex items-center justify-center"
+                        >
+                          <Send className="w-3.5 h-3.5" />
+                        </button>
+                      </form>
+                    </div>
+                  </div>
+                ) : (
+                  /* RENDER USER-TO-USER INBOX MESSAGE DRAWER */
+                  <div className="flex flex-col gap-3">
+                    <div className={`p-4 rounded-xl border flex flex-col gap-2 transition-all ${
+                      tc('bg-gradient-to-br from-indigo-500/10 to-[#0A0A0B] border-indigo-500/20 text-indigo-400', 'bg-gradient-to-br from-indigo-50 to-white border-indigo-200 text-indigo-800')
+                    }`}>
+                      <h4 className="font-bold text-xs uppercase tracking-wider font-mono">Bandeja de Mensajería Privada</h4>
+                      <p className={`text-xs leading-relaxed ${tc('text-white/60', 'text-slate-600')}`}>
+                        Envía y recibe mensajes directos instantáneos con otros miembros y personal del soporte del portal.
+                      </p>
+                    </div>
+
+                    {/* SELECT RECIPIENT DROPDOWN */}
+                    <div className="flex flex-col gap-1">
+                      <label className={`text-[10px] font-bold font-mono tracking-wider ${tc('text-white/40', 'text-slate-500')}`}>RECEPTOR PRIVADO:</label>
+                      <select
+                        value={activeInboxRecipient}
+                        onChange={(e) => setActiveInboxRecipient(e.target.value)}
+                        className={`w-full border rounded-lg p-2 text-xs focus:outline-none focus:border-indigo-500 ${
+                          tc('bg-[#050506] border-white/10 text-white', 'bg-white border-slate-200 text-slate-800')
+                        }`}
+                      >
+                        <option value="Admin_Nocturno">👑 Admin_Nocturno (Administrador)</option>
+                        <option value="DJ_Nocturno">🎵 DJ_Nocturno (Lounge Curator)</option>
+                        <option value="Soporte_VIP">🛡️ Soporte_VIP (Atención VIP)</option>
+                        <option value="Explorador_Premium">⭐ Explorador_Premium (Miembro VIP)</option>
+                      </select>
+                    </div>
+
+                    {/* Private Conversation thread */}
+                    <div className={`rounded-xl border flex flex-col overflow-hidden h-[260px] ${tc('bg-[#040405] border-white/10 text-white', 'bg-white border-slate-200 text-slate-800')}`}>
+                      <div className="px-3.5 py-2 bg-black/40 border-b border-white/5 flex items-center justify-between">
+                        <span className="text-[10px] font-bold font-mono text-indigo-400 uppercase">Chat con @{activeInboxRecipient}</span>
+                        <span className="text-[8px] font-mono text-white/30 uppercase tracking-widest">Encriptado</span>
+                      </div>
+
+                      <div className="flex-1 p-3 overflow-y-auto space-y-2.5 font-sans text-xs flex flex-col">
+                        {(() => {
+                          const myUsername = currentUser ? currentUser.username : 'invitado';
+                          const conversation = inboxMessages.filter(msg => 
+                            (msg.sender.toLowerCase() === myUsername.toLowerCase() && msg.recipient.toLowerCase() === activeInboxRecipient.toLowerCase()) ||
+                            (msg.sender.toLowerCase() === activeInboxRecipient.toLowerCase() && msg.recipient.toLowerCase() === myUsername.toLowerCase())
+                          );
+
+                          return conversation.length === 0 ? (
+                            <div className="text-white/30 text-center py-16 font-mono text-[9px] uppercase tracking-wider">No hay mensajes previos en esta conversación</div>
+                          ) : (
+                            conversation.map((msg) => {
+                              const isMe = msg.sender.toLowerCase() === myUsername.toLowerCase();
+                              return (
+                                <div
+                                  key={msg.id}
+                                  className={`max-w-[85%] rounded-2xl p-2.5 leading-relaxed flex flex-col ${
+                                    isMe
+                                      ? 'self-end bg-indigo-600 text-white rounded-br-none'
+                                      : tc('self-start bg-zinc-800/80 text-white rounded-bl-none border border-white/5', 'self-start bg-slate-100 text-slate-800 rounded-bl-none border border-slate-200')
+                                  }`}
+                                >
+                                  <span className="text-[8px] font-bold uppercase mb-0.5 text-indigo-300">
+                                    {msg.sender}
+                                  </span>
+                                  <p className="whitespace-pre-wrap">{msg.text}</p>
+                                  <span className={`text-[8px] mt-1 text-right block ${isMe ? 'text-white/40' : 'text-slate-400'}`}>{msg.timestamp}</span>
+                                </div>
+                              );
+                            })
+                          );
+                        })()}
+                      </div>
+
+                      <form onSubmit={handleSendInboxMessage} className="p-2 border-t border-white/5 bg-black/20 flex gap-2">
+                        <input
+                          type="text"
+                          placeholder={`Escribe un DM privado para ${activeInboxRecipient}...`}
+                          value={newInboxMessageText}
+                          onChange={(e) => setNewInboxMessageText(e.target.value)}
+                          className={`flex-1 border rounded-lg px-3 py-1.5 text-xs focus:outline-none focus:border-indigo-500 font-mono ${
+                            tc('bg-black/50 border-white/10 text-white placeholder-white/30', 'bg-white border-slate-200 text-slate-800 placeholder-slate-400')
+                          }`}
+                        />
+                        <button
+                          type="submit"
+                          disabled={!newInboxMessageText.trim()}
+                          className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 disabled:bg-zinc-700/50 disabled:text-zinc-500 text-white rounded-lg transition-colors flex items-center justify-center"
+                        >
+                          <Send className="w-3.5 h-3.5" />
+                        </button>
+                      </form>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
             {/* TAB CONTENT: TELEGRAM BOT CONTROL AND SERVER DATABASE */}
             {activeSidebarTab === 'bot' && (
               <div className="flex flex-col gap-4 animate-in fade-in slide-in-from-bottom-3 duration-300">
                 {/* Header Card */}
                 <div className={`p-4 rounded-xl border flex flex-col gap-2.5 relative overflow-hidden transition-all ${
-                  tc('bg-gradient-to-br from-blue-500/10 to-[#0A0A0B] border-blue-500/20 text-blue-400', 'bg-gradient-to-br from-blue-50 to-white border-blue-200 text-blue-800')
+                  tc('bg-[#0A0A0B] border-white/10 text-white', 'bg-white border-slate-200 text-slate-800')
                 }`}>
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                      <Bot className="w-5 h-5 text-blue-400 animate-pulse" />
-                      <h4 className="font-bold text-xs uppercase tracking-wider font-mono">Panel del Bot de Vídeo</h4>
-                    </div>
-                    <span className="flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] font-bold bg-green-500/20 border border-green-500/30 text-green-400 animate-pulse">
-                      ● CONECTADO
-                    </span>
-                  </div>
-                  <p className={`text-[11px] leading-relaxed ${tc('text-white/70', 'text-slate-600')}`}>
-                    Canal de sincronización para {telegramUrl.split('/').pop() || '@Start_vidroxbot'}. Aquí puedes configurar, supervisar y simular las peticiones remotas del bot en tiempo real.
+                  <p className="text-xs">
+                    Esta sección está migrada. Utiliza las pestañas superiores <strong>Telegram Feed</strong> y <strong>Social Chat</strong>.
                   </p>
-
-                  <div className="mt-1 flex flex-col gap-1.5 text-[10px] font-mono bg-black/30 p-2.5 rounded-lg border border-white/5">
-                    <div className="flex justify-between items-center">
-                      <span className="text-white/40">BOT ACTIVO:</span>
-                      <a href={telegramUrl} target="_blank" rel="noreferrer" className="text-cyan-400 hover:underline flex items-center gap-1">
-                        {telegramUrl.split('/').pop() || '@Start_vidroxbot'} <ExternalLink className="w-2.5 h-2.5" />
-                      </a>
-                    </div>
-                    <div className="flex justify-between items-center">
-                      <span className="text-white/40">URL WEBHOOK DE API:</span>
-                      <span className="text-blue-300 font-bold tracking-tight select-all truncate max-w-[180px]" title={typeof window !== 'undefined' ? `${window.location.origin}/api/telegram` : '/api/telegram'}>
-                        {typeof window !== 'undefined' ? `${window.location.origin}/api/telegram` : '/api/telegram'}
-                      </span>
-                    </div>
-                  </div>
                 </div>
+              </div>
+            )}
 
+            {activeSidebarTab === 'bot' && (
+              <div className="flex flex-col gap-4 animate-in fade-in slide-in-from-bottom-3 duration-300">
                 {/* DYNAMIC TELEGRAM SETUP & TROUBLESHOOTING GUIDE */}
                 <div className={`p-4 rounded-xl border flex flex-col gap-3 transition-all ${
                   tc('bg-[#0E0F12]/80 border-white/10 text-white', 'bg-white border-slate-200 text-slate-800')
