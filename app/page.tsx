@@ -222,8 +222,8 @@ export default function Home() {
   const [commentSort, setCommentSort] = useState<'rating' | 'newest'>('rating');
   const [commentSearch, setCommentSearch] = useState('');
 
-  // Tab state (Sidebar) - 'videos' | 'telegram' | 'social' | 'nginx' | 'quest'
-  const [activeSidebarTab, setActiveSidebarTab] = useState<'videos' | 'telegram' | 'social' | 'nginx' | 'quest'>('videos');
+  // Tab state (Sidebar) - 'videos' | 'telegram' | 'social' | 'nginx' | 'quest' | 'bot'
+  const [activeSidebarTab, setActiveSidebarTab] = useState<'videos' | 'telegram' | 'social' | 'nginx' | 'quest' | 'bot'>('videos');
   const [activeGuideTab, setActiveGuideTab] = useState<'render-standard' | 'render-docker' | 'vps'>('render-standard');
 
   // Server Sync and Logs State
@@ -644,10 +644,13 @@ export default function Home() {
   // Poll server for live updates every 5 seconds
   useEffect(() => {
     if (!mounted) return;
-    syncWithServer();
-    const interval = setInterval(() => {
+    
+    const runSync = () => {
       syncWithServer();
-    }, 5000);
+    };
+
+    setTimeout(runSync, 0);
+    const interval = setInterval(runSync, 5000);
     return () => clearInterval(interval);
   }, [mounted, syncWithServer]);
 
@@ -3714,7 +3717,45 @@ services:
                   </div>
 
                   {/* Input Form */}
-                  <form onSubmit={handleSimulateTelegramMessage} className="p-2 border-t border-white/5 bg-black/20 flex gap-2">
+                  <form onSubmit={(e) => {
+                    e.preventDefault();
+                    if (!simulatedInput.trim() || isSimulatingMessage) return;
+                    const userText = simulatedInput.trim();
+                    setSimulatedChat(prev => [...prev, {
+                      id: 'user-' + Date.now(),
+                      sender: 'user',
+                      text: userText,
+                      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+                    }]);
+                    setSimulatedInput('');
+                    
+                    // Trigger bot reply
+                    if (typeof setIsSimulatingMessage === 'function') {
+                      setIsSimulatingMessage(true);
+                    }
+                    setTimeout(() => {
+                      let reply = 'Lo siento, no entendí ese comando. Prueba con /help o pega un enlace de video.';
+                      if (userText.startsWith('/start')) {
+                        reply = '¡Hola! Bienvenido al simulador de Vidroxbot. Pega un enlace de video para comenzar o usa /status para ver el estado del servidor.';
+                      } else if (userText.startsWith('/status')) {
+                        reply = '🤖 ESTADO DEL SERVIDOR:\n• Servidor: ACTIVO 🟢\n• Base de Datos: ACTIVA 🟢\n• Nginx Proxy: ok';
+                      } else if (userText.startsWith('/help')) {
+                        reply = 'Comandos disponibles:\n• /start - Iniciar el bot\n• /status - Ver estado del servidor\n• /help - Mostrar esta ayuda';
+                      } else if (userText.includes('youtube.com') || userText.includes('youtu.be') || userText.includes('http')) {
+                        reply = '📥 ¡Video detectado! Procesando el enlace para extraer metadatos y agregarlo a la lista de reproducción...';
+                      }
+
+                      setSimulatedChat(prev => [...prev, {
+                        id: 'bot-' + Date.now(),
+                        sender: 'bot',
+                        text: reply,
+                        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+                      }]);
+                      if (typeof setIsSimulatingMessage === 'function') {
+                        setIsSimulatingMessage(false);
+                      }
+                    }, 1000);
+                  }} className="p-2 border-t border-white/5 bg-black/20 flex gap-2">
                     <input
                       type="text"
                       placeholder="Prueba un comando como /status o pega un video..."
