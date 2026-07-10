@@ -1012,6 +1012,16 @@ export default function Home() {
           e.preventDefault();
           setCinemaMode(c => !c);
         }
+      } else if (e.key === 'c' || e.key === 'C') {
+        if (!e.ctrlKey && !e.altKey && !e.metaKey) {
+          const activeEl = document.activeElement;
+          if (activeEl && (activeEl.tagName === 'INPUT' || activeEl.tagName === 'TEXTAREA' || activeEl.getAttribute('contenteditable') === 'true')) {
+            return;
+          }
+          e.preventDefault();
+          setSubtitlesEnabled(s => !s);
+          awardPoints(10, 'Subtítulos alternados mediante atajo C');
+        }
       } else if (e.key === ' ' || e.key === 'Spacebar') {
         const activeEl = document.activeElement;
         if (activeEl && (activeEl.tagName === 'INPUT' || activeEl.tagName === 'TEXTAREA' || activeEl.getAttribute('contenteditable') === 'true')) {
@@ -1045,7 +1055,7 @@ export default function Home() {
       window.removeEventListener('keydown', handleKeyDown);
       window.removeEventListener('paste', handleGlobalPaste);
     };
-  }, [mounted, processInvisibleVideoInput, handleSeek, handleNextVideo, handlePrevVideo, setCinemaMode, togglePlayPause, awardPoints]);
+  }, [mounted, processInvisibleVideoInput, handleSeek, handleNextVideo, handlePrevVideo, setCinemaMode, togglePlayPause, awardPoints, setSubtitlesEnabled]);
 
   if (!mounted) {
     return (
@@ -1947,6 +1957,26 @@ services:
                   ? 'h-[320px] xs:h-[420px] sm:h-[650px]' 
                   : 'aspect-video'
             } ${tc('border-white/10', 'border-slate-300')}`}>
+              {/* Floating CC subtitle toggle button on top right of the video player */}
+              {activeVideo && (
+                <button
+                  id="btn-floating-cc-toggle"
+                  onClick={() => {
+                    setSubtitlesEnabled(!subtitlesEnabled);
+                    awardPoints(15, subtitlesEnabled ? 'Desactivados subtítulos por botón flotante' : 'Activados subtítulos por botón flotante');
+                  }}
+                  className={`absolute top-4 right-4 z-30 flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold font-mono tracking-wider shadow-2xl transition-all border backdrop-blur-md ${
+                    subtitlesEnabled
+                      ? 'bg-blue-600/95 text-white border-blue-500 hover:bg-blue-600'
+                      : 'bg-black/75 text-white/60 border-white/10 hover:bg-black/90 hover:text-white'
+                  }`}
+                  title={subtitlesEnabled ? "Desactivar subtítulos" : "Activar subtítulos"}
+                >
+                  <Languages className={`w-3.5 h-3.5 ${subtitlesEnabled ? 'animate-pulse text-white' : 'text-white/50'}`} />
+                  <span>SUBTÍTULOS: {subtitlesEnabled ? 'ON' : 'OFF'}</span>
+                </button>
+              )}
+
               {activeVideo ? (
                 activeVideo.url.match(/\.(mp4|webm|ogg)($|\?)/i) ? (
                   <video
@@ -2125,6 +2155,24 @@ services:
                   >
                     <SkipForward className="w-4 h-4" />
                   </button>
+
+                  {/* Dedicated Subtitle/CC Toggle Button */}
+                  <button
+                    id="btn-subtitles-toggle-controls"
+                    onClick={() => {
+                      setSubtitlesEnabled(!subtitlesEnabled);
+                      awardPoints(15, subtitlesEnabled ? 'Subtítulos desactivados desde controles' : 'Subtítulos activados desde controles');
+                    }}
+                    className={`px-3 py-2 rounded-lg border flex items-center gap-1.5 text-xs font-mono font-bold transition-all ${
+                      subtitlesEnabled
+                        ? tc('bg-blue-500/15 border-blue-500/25 text-blue-400 hover:bg-blue-500/25', 'bg-blue-50 border-blue-200 text-blue-700 hover:bg-blue-100')
+                        : tc('bg-white/5 border-white/10 text-white/40 hover:bg-white/10 hover:text-white', 'bg-slate-100 border-slate-200 text-slate-400 hover:bg-slate-200 hover:text-slate-600')
+                    }`}
+                    title={subtitlesEnabled ? "Desactivar Subtítulos (Atajo: C)" : "Activar Subtítulos (Atajo: C)"}
+                  >
+                    <Languages className={`w-3.5 h-3.5 ${subtitlesEnabled ? 'animate-pulse text-blue-400' : ''}`} />
+                    <span>CC: {subtitlesEnabled ? 'ON' : 'OFF'}</span>
+                  </button>
                 </div>
               </div>
 
@@ -2141,6 +2189,9 @@ services:
                 </span>
                 <span className="flex items-center gap-1 px-1.5 py-0.5 rounded bg-black/20 border border-white/5">
                   <kbd>M</kbd> <span className="opacity-75">Cine</span>
+                </span>
+                <span className="flex items-center gap-1 px-1.5 py-0.5 rounded bg-black/20 border border-white/5">
+                  <kbd>C</kbd> <span className="opacity-75">CC</span>
                 </span>
               </div>
 
