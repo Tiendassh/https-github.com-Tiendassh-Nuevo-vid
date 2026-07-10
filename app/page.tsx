@@ -48,7 +48,9 @@ import {
   Activity,
   Terminal,
   Settings,
-  Bot
+  Bot,
+  Languages,
+  RefreshCw
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
@@ -205,6 +207,15 @@ export default function Home() {
   const [videos, setVideos] = useState<Video[]>([]);
   const [activeVideo, setActiveVideo] = useState<Video | null>(null);
   const [comments, setComments] = useState<Comment[]>([]);
+
+  // Subtitle & translation states
+  const [subtitles, setSubtitles] = useState<Array<{ start: number; end: number; original: string; spanish: string }>>([]);
+  const [subtitlesLoading, setSubtitlesLoading] = useState(false);
+  const [subtitlesError, setSubtitlesError] = useState('');
+  const [detectedLanguage, setDetectedLanguage] = useState('');
+  const [subtitlesEnabled, setSubtitlesEnabled] = useState(true);
+  const [videoCurrentTime, setVideoCurrentTime] = useState(0);
+  const [isPlayingSimulated, setIsPlayingSimulated] = useState(false);
   
   // Custom Video Form State
   const [showAddForm, setShowAddForm] = useState(false);
@@ -653,6 +664,74 @@ export default function Home() {
     const interval = setInterval(runSync, 5000);
     return () => clearInterval(interval);
   }, [mounted, syncWithServer]);
+
+  // Fetch translated subtitles when active video changes
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      if (!activeVideo) {
+        setSubtitles([]);
+        setDetectedLanguage('');
+        setVideoCurrentTime(0);
+        setIsPlayingSimulated(false);
+        return;
+      }
+
+      setSubtitlesLoading(true);
+      setSubtitlesError('');
+      setSubtitles([]);
+      setVideoCurrentTime(0);
+      setIsPlayingSimulated(true);
+
+      fetch('/api/translate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title: activeVideo.title,
+          description: activeVideo.description || '',
+          author: activeVideo.author || '',
+          category: activeVideo.category || '',
+        }),
+      })
+        .then(res => res.json())
+        .then(data => {
+          if (data.success) {
+            setSubtitles(data.subtitles || []);
+            setDetectedLanguage(data.detectedLanguage || 'Desconocido');
+          } else {
+            setSubtitlesError(data.error || 'No se pudieron generar los subtítulos.');
+          }
+        })
+        .catch(err => {
+          console.error('Error al cargar subtítulos:', err);
+          setSubtitlesError('Error al conectar con el servicio de traducción de Gemini.');
+        })
+        .finally(() => {
+          setSubtitlesLoading(false);
+        });
+    }, 0);
+
+    return () => clearTimeout(timer);
+  }, [activeVideo]);
+
+  // Simulated playback time increment for iframes or when simulated play is active
+  useEffect(() => {
+    if (!isPlayingSimulated || !activeVideo || !isPlaying) return;
+    
+    const isNativeVideo = activeVideo.url.match(/\.(mp4|webm|ogg)($|\?)/i);
+    // If it's a native video, we update current time from video elements, not simulated timer.
+    if (isNativeVideo) return;
+
+    const interval = setInterval(() => {
+      setVideoCurrentTime(prev => {
+        if (prev >= 180) {
+          return 0;
+        }
+        return prev + 0.5;
+      });
+    }, 500);
+
+    return () => clearInterval(interval);
+  }, [isPlayingSimulated, activeVideo, isPlaying]);
 
   // Handle Telegram feed postings
   const handleAddTelegramPost = async (e: React.FormEvent) => {
@@ -1881,6 +1960,7 @@ services:
                         if (btnNext) btnNext.click();
                       }
                     }}
+                    onTimeUpdate={(e) => setVideoCurrentTime((e.target as HTMLVideoElement).currentTime)}
                     className="w-full h-full object-contain"
                     style={{ background: 'black' }}
                   />
@@ -1899,6 +1979,42 @@ services:
                 <div className="w-full h-full flex flex-col items-center justify-center p-6 text-center text-white/50">
                   <Play className="w-12 h-12 text-white/20 mb-2 animate-bounce" />
                   <p>Selecciona un video de la barra lateral para reproducir.</p>
+                </div>
+              )}
+
+              {/* Subtitle overlay inside the video player */}
+              {activeVideo && subtitlesEnabled && (
+                <div className="absolute bottom-16 left-1/2 -translate-x-1/2 z-20 w-11/12 max-w-2xl px-4 text-center pointer-events-none select-none">
+                  {subtitlesLoading ? (
+                    <div className="inline-block bg-black/85 backdrop-blur-md px-3.5 py-2 rounded-xl border border-white/10 text-[11px] font-mono text-cyan-400 animate-pulse shadow-2xl">
+                      ⚡ Traduciendo y sincronizando subtítulos al español con Gemini IA...
+                    </div>
+                  ) : subtitlesError ? (
+                    <div className="inline-block bg-red-950/85 backdrop-blur-md px-3.5 py-2 rounded-xl border border-red-500/20 text-[11px] text-red-300 shadow-2xl">
+                      ⚠️ {subtitlesError}
+                    </div>
+                  ) : (
+                    (() => {
+                      const currentSub = subtitles.find(
+                        s => videoCurrentTime >= s.start && videoCurrentTime <= s.end
+                      );
+                      if (!currentSub) return null;
+                      return (
+                        <div className="inline-flex flex-col items-center gap-1.5 transition-all duration-200">
+                          {/* Original line indicator */}
+                          {detectedLanguage && detectedLanguage.toLowerCase() !== 'español' && (
+                            <span className="bg-black/50 backdrop-blur-sm text-white/50 text-[10px] sm:text-xs font-sans px-2.5 py-0.5 rounded-md italic">
+                              [{detectedLanguage}]: {currentSub.original}
+                            </span>
+                          )}
+                          {/* Spanish Translation line */}
+                          <span className="bg-black/85 backdrop-blur-md text-white text-sm sm:text-base md:text-lg font-medium px-4 py-2 rounded-xl border border-white/10 shadow-2xl tracking-wide">
+                            {currentSub.spanish}
+                          </span>
+                        </div>
+                      );
+                    })()
+                  )}
                 </div>
               )}
             </div>
@@ -2098,6 +2214,203 @@ services:
                   {cinemaMode ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
                 </button>
               </div>
+            </div>
+          )}
+
+          {/* MÓDULO DE TRADUCCIÓN Y SUBTÍTULOS EN VIVO */}
+          {activeVideo && (
+            <div 
+              id="subtitles-translation-deck"
+              className={`p-4 rounded-2xl border flex flex-col gap-4 transition-all duration-300 shadow-lg ${
+                tc('bg-[#0E0F12]/90 border-white/10 text-white', 'bg-white border-slate-200 text-slate-800')
+              }`}
+            >
+              {/* Header section of translation deck */}
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-white/5">
+                <div className="flex items-center gap-2.5">
+                  <div className={`p-1.5 rounded-lg ${tc('bg-blue-500/10 text-blue-400', 'bg-blue-50 text-blue-600')}`}>
+                    <Languages className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <h2 className="text-sm font-semibold tracking-wide">Traductor & Subtítulos en Vivo (Gemini AI)</h2>
+                    <p className={`text-[11px] ${tc('text-white/50', 'text-slate-500')}`}>
+                      Detección automática de idioma original y traducción en tiempo real al español
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => setSubtitlesEnabled(!subtitlesEnabled)}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-bold font-mono uppercase tracking-wider transition-all border ${
+                      subtitlesEnabled
+                        ? tc('bg-blue-500/15 border-blue-500/35 text-blue-400 hover:bg-blue-500/25', 'bg-blue-50 border-blue-300 text-blue-700 hover:bg-blue-100')
+                        : tc('bg-white/5 border-white/10 text-white/50 hover:text-white hover:bg-white/10', 'bg-slate-100 border-slate-200 text-slate-400 hover:text-slate-700 hover:bg-slate-200')
+                    }`}
+                  >
+                    {subtitlesEnabled ? 'Subtítulos: ON' : 'Subtítulos: OFF'}
+                  </button>
+
+                  <button
+                    onClick={() => {
+                      // Trigger refetch
+                      setSubtitlesLoading(true);
+                      setSubtitlesError('');
+                      fetch('/api/translate', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                          title: activeVideo.title,
+                          description: activeVideo.description || '',
+                          author: activeVideo.author || '',
+                          category: activeVideo.category || '',
+                        }),
+                      })
+                        .then(res => res.json())
+                        .then(data => {
+                          if (data.success) {
+                            setSubtitles(data.subtitles || []);
+                            setDetectedLanguage(data.detectedLanguage || 'Desconocido');
+                          } else {
+                            setSubtitlesError(data.error || 'No se pudieron generar los subtítulos.');
+                          }
+                        })
+                        .catch(err => {
+                          console.error('Error al regenerar:', err);
+                          setSubtitlesError('Error de red al regenerar subtítulos.');
+                        })
+                        .finally(() => {
+                          setSubtitlesLoading(false);
+                        });
+                    }}
+                    disabled={subtitlesLoading}
+                    className={`p-2 rounded-lg border transition-all ${
+                      subtitlesLoading ? 'opacity-50 cursor-not-allowed' : ''
+                    } ${tc('bg-white/5 border-white/10 hover:bg-white/10 text-white/80 hover:text-white', 'bg-slate-100 border-slate-200 hover:bg-slate-200 text-slate-700 hover:text-slate-900')}`}
+                    title="Regenerar traducción con Gemini AI"
+                  >
+                    <RefreshCw className={`w-3.5 h-3.5 ${subtitlesLoading ? 'animate-spin text-cyan-400' : ''}`} />
+                  </button>
+                </div>
+              </div>
+
+              {/* Translation Status details */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3 text-xs">
+                {/* Language detected */}
+                <div className={`p-2.5 rounded-xl border flex flex-col gap-1 ${tc('bg-white/5 border-white/5', 'bg-slate-50 border-slate-100')}`}>
+                  <span className={`text-[10px] uppercase font-mono tracking-wider ${tc('text-white/40', 'text-slate-400')}`}>Idioma Original:</span>
+                  {subtitlesLoading ? (
+                    <span className="font-semibold text-cyan-400 animate-pulse font-mono">Analizando...</span>
+                  ) : detectedLanguage ? (
+                    <span className="font-semibold text-emerald-400 flex items-center gap-1.5">
+                      🟢 {detectedLanguage}
+                    </span>
+                  ) : (
+                    <span className="font-semibold opacity-40">Pendiente</span>
+                  )}
+                </div>
+
+                {/* Translation Engine */}
+                <div className={`p-2.5 rounded-xl border flex flex-col gap-1 ${tc('bg-white/5 border-white/5', 'bg-slate-50 border-slate-100')}`}>
+                  <span className={`text-[10px] uppercase font-mono tracking-wider ${tc('text-white/40', 'text-slate-400')}`}>Motor Traductor:</span>
+                  <span className="font-semibold text-cyan-400 font-mono">Gemini 3.5 Flash ⚡</span>
+                </div>
+
+                {/* Playback Source type */}
+                <div className={`p-2.5 rounded-xl border flex flex-col gap-1 ${tc('bg-white/5 border-white/5', 'bg-slate-50 border-slate-100')}`}>
+                  <span className={`text-[10px] uppercase font-mono tracking-wider ${tc('text-white/40', 'text-slate-400')}`}>Modo Sincro:</span>
+                  <span className="font-semibold font-mono">
+                    {activeVideo.url.match(/\.(mp4|webm|ogg)($|\?)/i) ? 'onTimeUpdate (Nativo)' : 'Simulada (Intervalo)'}
+                  </span>
+                </div>
+
+                {/* Time controller state */}
+                <div className={`p-2.5 rounded-xl border flex flex-col gap-1 ${tc('bg-white/5 border-white/5', 'bg-slate-50 border-slate-100')}`}>
+                  <span className={`text-[10px] uppercase font-mono tracking-wider ${tc('text-white/40', 'text-slate-400')}`}>Cursor de Tiempo:</span>
+                  <span className="font-semibold font-mono text-blue-400">
+                    {Math.floor(videoCurrentTime / 60)}:{(videoCurrentTime % 60).toFixed(1).padStart(4, '0')} / 3:00
+                  </span>
+                </div>
+              </div>
+
+              {/* Timeline scrubber for simulated subtitles */}
+              {(!activeVideo.url.match(/\.(mp4|webm|ogg)($|\?)/i)) && (
+                <div className={`p-3 rounded-xl border flex flex-col gap-2 ${tc('bg-black/30 border-white/5', 'bg-slate-50 border-slate-200')}`}>
+                  <div className="flex items-center justify-between text-[11px] font-mono">
+                    <div className="flex items-center gap-1.5">
+                      <span className="w-2 h-2 rounded-full bg-cyan-400 animate-ping"></span>
+                      <span className={tc('text-white/70', 'text-slate-600')}>Línea de tiempo de traducción simulada:</span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={() => setIsPlayingSimulated(!isPlayingSimulated)}
+                        className={`px-2 py-0.5 rounded text-[10px] font-bold border transition-all ${
+                          isPlayingSimulated
+                            ? tc('bg-emerald-500/10 border-emerald-500/25 text-emerald-400', 'bg-emerald-50 border-emerald-300 text-emerald-700')
+                            : tc('bg-amber-500/10 border-amber-500/25 text-amber-400', 'bg-amber-50 border-amber-300 text-amber-700')
+                        }`}
+                      >
+                        {isPlayingSimulated ? 'REPRODUCIENDO SINCRO' : 'SINCRO PAUSADA'}
+                      </button>
+                      <button
+                        onClick={() => setVideoCurrentTime(0)}
+                        className={`px-1.5 py-0.5 rounded text-[10px] border ${tc('bg-white/5 border-white/10 hover:bg-white/10', 'bg-white border-slate-300 hover:bg-slate-50')}`}
+                      >
+                        Reiniciar
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-3">
+                    <span className="text-[10px] font-mono opacity-50">0:00</span>
+                    <input
+                      type="range"
+                      min="0"
+                      max="180"
+                      step="0.5"
+                      value={videoCurrentTime}
+                      onChange={(e) => {
+                        setVideoCurrentTime(parseFloat(e.target.value));
+                      }}
+                      className="flex-1 accent-blue-500 cursor-ew-resize h-1 bg-white/10 rounded-lg appearance-none"
+                    />
+                    <span className="text-[10px] font-mono opacity-50">3:00</span>
+                  </div>
+                </div>
+              )}
+
+              {/* Live Preview List of Subtitles */}
+              {subtitles.length > 0 && (
+                <div className="flex flex-col gap-1.5 mt-1">
+                  <span className={`text-[10px] font-mono uppercase tracking-wider block ${tc('text-white/40', 'text-slate-400')}`}>Previsualización de Líneas de Traducción:</span>
+                  <div className={`max-h-24 overflow-y-auto rounded-xl border p-2 flex flex-col gap-1 text-[11px] font-mono ${tc('bg-black/20 border-white/5', 'bg-slate-50 border-slate-100')}`}>
+                    {subtitles.map((sub, idx) => {
+                      const isActive = videoCurrentTime >= sub.start && videoCurrentTime <= sub.end;
+                      return (
+                        <button
+                          key={idx}
+                          onClick={() => setVideoCurrentTime(sub.start)}
+                          className={`text-left p-1.5 rounded transition-all flex items-start gap-2.5 ${
+                            isActive
+                              ? tc('bg-blue-500/15 text-white font-bold border-l-2 border-blue-500 pl-2', 'bg-blue-50 text-blue-900 font-bold border-l-2 border-blue-600 pl-2')
+                              : tc('hover:bg-white/5 text-white/50 hover:text-white/80', 'hover:bg-slate-100 text-slate-500 hover:text-slate-800')
+                          }`}
+                        >
+                          <span className={`text-[10px] ${isActive ? 'text-blue-400' : 'opacity-40'} font-mono shrink-0`}>
+                            [{Math.floor(sub.start / 60)}:{(sub.start % 60).toString().padStart(2, '0')}]
+                          </span>
+                          <span className="flex-1 truncate">
+                            {detectedLanguage && detectedLanguage.toLowerCase() !== 'español' && (
+                              <span className="opacity-60 italic mr-1">({sub.original})</span>
+                            )}
+                            <span>{sub.spanish}</span>
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
