@@ -73,7 +73,7 @@ const initialData: DatabaseSchema = {
     }
   ],
   serverRequests: 1,
-  telegramUrl: 'https://t.me/NocturnalCommunityGroup',
+  telegramUrl: 'https://t.me/nocturnalpos',
   telegramFeed: [
     {
       id: 'feed-1',
